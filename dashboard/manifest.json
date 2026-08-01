@@ -1,0 +1,14 @@
+{
+  "name": "nesquena-webui-control",
+  "label": "NesQuena UI",
+  "description": "Start, stop, restart, and inspect the NesQuena WebUI LaunchAgent on this Mac.",
+  "icon": "Wrench",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/nesquena",
+    "position": "after:achievements"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
