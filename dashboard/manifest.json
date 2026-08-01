@@ -1,6 +1,6 @@
 {
   "name": "nesquena-webui-control",
-  "label": "NesQuena UI",
+  "label": "Nesquena WebUI",
   "description": "Start, stop, restart, and inspect the NesQuena WebUI LaunchAgent on this Mac.",
   "icon": "Wrench",
   "version": "1.0.0",

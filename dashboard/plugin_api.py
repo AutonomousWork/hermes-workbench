@@ -12,25 +12,12 @@ import os
 import re
 import subprocess
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-try:
-    from fastapi import APIRouter, HTTPException
-except ImportError:  # Keep the pure service-control module unit-testable.
-    class APIRouter:  # type: ignore[no-redef]
-        def get(self, *_args, **_kwargs):
-            return lambda function: function
-
-        def post(self, *_args, **_kwargs):
-            return lambda function: function
-
-    class HTTPException(Exception):  # type: ignore[no-redef]
-        def __init__(self, status_code: int, detail: str):
-            super().__init__(detail)
-            self.status_code = status_code
-            self.detail = detail
+from fastapi import APIRouter, HTTPException
 
 
 router = APIRouter()
@@ -104,28 +91,26 @@ def _service_status() -> dict[str, Any]:
 
 
 def _probe_http() -> dict[str, Any]:
-    connection = http.client.HTTPConnection(WEBUI_HOST, WEBUI_PORT, timeout=2)
     try:
-        connection.request("GET", "/")
-        response = connection.getresponse()
-        response.read(1)
-        return {
-            "reachable": True,
-            "status_code": response.status,
-            "error": None,
-        }
-    except OSError as exc:
+        with closing(
+            http.client.HTTPConnection(WEBUI_HOST, WEBUI_PORT, timeout=2)
+        ) as connection:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            return {
+                "reachable": True,
+                "status_code": response.status,
+                "error": None,
+            }
+    except (OSError, http.client.HTTPException) as exc:
         return {
             "reachable": False,
             "status_code": None,
             "error": str(exc),
         }
-    finally:
-        connection.close()
 
 
-def get_status() -> dict[str, Any]:
-    launchd = _service_status()
+def _status_payload(launchd: dict[str, Any]) -> dict[str, Any]:
     http = _probe_http()
     status_code = http["status_code"]
     healthy_http = bool(
@@ -146,6 +131,10 @@ def get_status() -> dict[str, Any]:
     }
 
 
+def get_status() -> dict[str, Any]:
+    return _status_payload(_service_status())
+
+
 def _require_success(action: str, result: subprocess.CompletedProcess[str]) -> None:
     if result.returncode == 0:
         return
@@ -164,10 +153,12 @@ def _wait_for_status(
     deadline = time.monotonic() + timeout
     last: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        last = get_status()
+        last = _service_status()
         reached = last["loaded"] is loaded and last["running"] is running
-        if reached and (not require_healthy or last["healthy"]):
-            return last
+        if reached:
+            status = _status_payload(last)
+            if not require_healthy or status["healthy"]:
+                return status
         time.sleep(0.25)
 
     observed = "unknown" if last is None else str(last.get("state", "unknown"))
@@ -195,16 +186,7 @@ def _result(
     }
 
 
-def start_service() -> dict[str, Any]:
-    current = _service_status()
-    if current["running"]:
-        return _result(
-            "start",
-            changed=False,
-            message="NesQuena WebUI is already running.",
-            status=get_status(),
-        )
-
+def _start_from(current: dict[str, Any]) -> dict[str, Any]:
     if current["loaded"]:
         result = _run_launchctl("kickstart", SERVICE_TARGET)
         _require_success("start", result)
@@ -216,7 +198,20 @@ def start_service() -> dict[str, Any]:
         bootstrap = _run_launchctl("bootstrap", GUI_DOMAIN, str(PLIST_PATH))
         _require_success("start", bootstrap)
 
-    status = _wait_for_status(loaded=True, running=True, require_healthy=True)
+    return _wait_for_status(loaded=True, running=True, require_healthy=True)
+
+
+def start_service() -> dict[str, Any]:
+    current = _service_status()
+    if current["running"]:
+        return _result(
+            "start",
+            changed=False,
+            message="NesQuena WebUI is already running.",
+            status=_status_payload(current),
+        )
+
+    status = _start_from(current)
     return _result(
         "start",
         changed=True,
@@ -232,7 +227,7 @@ def stop_service() -> dict[str, Any]:
             "stop",
             changed=False,
             message="NesQuena WebUI is already stopped.",
-            status=get_status(),
+            status=_status_payload(current),
         )
 
     result = _run_launchctl("bootout", SERVICE_TARGET)
@@ -249,10 +244,13 @@ def stop_service() -> dict[str, Any]:
 def restart_service() -> dict[str, Any]:
     current = _service_status()
     if not current["loaded"]:
-        started = start_service()
-        started["action"] = "restart"
-        started["message"] = "NesQuena WebUI was stopped and has been started."
-        return started
+        status = _start_from(current)
+        return _result(
+            "restart",
+            changed=True,
+            message="NesQuena WebUI was stopped and has been started.",
+            status=status,
+        )
 
     result = _run_launchctl("kickstart", "-k", SERVICE_TARGET)
     _require_success("restart", result)
@@ -265,7 +263,7 @@ def restart_service() -> dict[str, Any]:
     )
 
 
-def _run_route(action):
+def _run_route(action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     try:
         return action()
     except ServiceControlError as exc:

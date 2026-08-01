@@ -10,11 +10,19 @@ DASHBOARD = REPO_ROOT / "dashboard"
 
 
 class PluginContractTests(unittest.TestCase):
+    def test_runtime_manifest_is_an_inert_dashboard_allow_list_shim(self):
+        manifest = (REPO_ROOT / "plugin.yaml").read_text()
+        runtime = (REPO_ROOT / "__init__.py").read_text()
+
+        self.assertIn("name: nesquena-webui-control", manifest)
+        self.assertIn("hooks: []", manifest)
+        self.assertIn("def register(_context)", runtime)
+
     def test_manifest_registers_a_dashboard_tab_and_backend(self):
         manifest = json.loads((DASHBOARD / "manifest.json").read_text())
 
         self.assertEqual(manifest["name"], "nesquena-webui-control")
-        self.assertEqual(manifest["label"], "NesQuena UI")
+        self.assertEqual(manifest["label"], "Nesquena WebUI")
         self.assertEqual(manifest["tab"]["path"], "/nesquena")
         self.assertEqual(manifest["tab"]["position"], "after:achievements")
         self.assertEqual(manifest["entry"], "dist/index.js")
@@ -30,7 +38,7 @@ class PluginContractTests(unittest.TestCase):
         for action in ("start", "stop", "restart"):
             self.assertIn(f'runAction("{action}")', bundle)
         self.assertIn(
-            'window.__HERMES_PLUGINS__.register("nesquena-webui-control"',
+            'registry.register("nesquena-webui-control"',
             bundle,
         )
 

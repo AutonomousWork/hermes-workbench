@@ -3,7 +3,7 @@
 A standalone plugin for the official `hermes dashboard` that controls the
 NesQuena WebUI LaunchAgent on a Mac Mini.
 
-The plugin adds a **NesQuena UI** tab alongside the built-in Kanban and
+The plugin adds a **Nesquena WebUI** tab alongside the built-in Kanban and
 Achievements tabs. It provides four authenticated controls:
 
 - **Start** — enables and bootstraps `ai.hermes.webui` from its existing plist.
@@ -31,7 +31,8 @@ Clone this repository anywhere, then run:
 ./scripts/install.sh
 ```
 
-The installer creates this symlink:
+The installer creates this symlink and enables the plugin without granting it
+permission to override any built-in Hermes tools:
 
 ```text
 ~/.hermes/plugins/nesquena-webui-control -> <this repository>
@@ -39,6 +40,13 @@ The installer creates this symlink:
 
 Restart `hermes dashboard` once after installation. Backend API routes are
 mounted only at dashboard startup; a plugin rescan alone is not sufficient.
+
+If you install manually, explicitly allow-list the user plugin before
+restarting the dashboard:
+
+```sh
+hermes plugins enable --no-allow-tool-override nesquena-webui-control
+```
 
 ## API
 

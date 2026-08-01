@@ -69,14 +69,19 @@
 
     useEffect(function () {
       let active = true;
-      api("/status")
-        .then(function (next) { if (active) setStatus(next); })
-        .catch(function (failure) { if (active) setError(errorMessage(failure)); });
-      const timer = window.setInterval(function () {
+      let inFlight = false;
+
+      function poll() {
+        if (!active || inFlight) return;
+        inFlight = true;
         api("/status")
           .then(function (next) { if (active) setStatus(next); })
-          .catch(function (failure) { if (active) setError(errorMessage(failure)); });
-      }, 10000);
+          .catch(function (failure) { if (active) setError(errorMessage(failure)); })
+          .finally(function () { inFlight = false; });
+      }
+
+      poll();
+      const timer = window.setInterval(poll, 10000);
       return function () {
         active = false;
         window.clearInterval(timer);
@@ -100,7 +105,7 @@
         .catch(function (failure) {
           setError(errorMessage(failure));
         })
-        .then(function () {
+        .finally(function () {
           setBusy(null);
         });
     }
@@ -113,7 +118,7 @@
         setNotice("Status refreshed.");
       }).catch(function () {
         // refresh() already populated the visible error.
-      }).then(function () {
+      }).finally(function () {
         setBusy(null);
       });
     }
@@ -130,7 +135,7 @@
       h("div", { className: "nesquena-control__hero" },
         h("div", null,
           h("div", { className: "nesquena-control__eyebrow" }, "MAC MINI SERVICE CONTROL"),
-          h("h1", null, "NesQuena Web UI"),
+          h("h1", null, "Nesquena WebUI"),
           h("p", null,
             "Control the local WebUI LaunchAgent after Hermes updates or whenever the interface needs recovery."
           ),
@@ -201,5 +206,5 @@
     );
   }
 
-  window.__HERMES_PLUGINS__.register("nesquena-webui-control", NesQuenaControlPage);
+  registry.register("nesquena-webui-control", NesQuenaControlPage);
 })();
