@@ -2,6 +2,8 @@
 
 An unofficial, Linear-inspired dark theme for the built-in Hermes Agent web dashboard. It changes styling only. It does not modify dashboard components, install a plugin, or patch Hermes source code.
 
+![Hermes Dashboard using the Linear theme](./hermes-linear.png)
+
 ## What it changes
 
 - Near-black surfaces with quiet borders
