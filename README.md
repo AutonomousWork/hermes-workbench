@@ -1,2 +1,26 @@
-# hermes-workbench
-Opinionated plugins for shaping Hermes Agent into an integrated command center across the autonomous work stack.
+# Hermes Workbench
+
+Opinionated plugins and themes for shaping Hermes Agent into an integrated command center across the autonomous work stack.
+
+Each addition is intentionally designed to be lightweight and non-duplicative with core functionality.
+
+## Themes
+
+### [Linear](./themes/linear)
+
+An unofficial, Linear-inspired dark theme for the built-in Hermes Agent web dashboard.
+
+![Hermes Dashboard using the Linear theme](./themes/linear/hermes-linear.png)
+
+## Plugins
+
+- **Nesquena WebUI Health** *(coming soon)* — Health and status visibility for the Nesquena WebUI.
+- **Blocks Buzz** *(coming soon)* — Server health monitoring and management.
+- **Backboard** *(coming soon)* — Status and visibility for backup scripts covering Hermes and supported components, including macOS LaunchAgents and Cloudflare R2.
+
+## Principles
+
+- **Opinionated by design** — strong defaults instead of endless configuration
+- **Built for autonomous work** — focused on visibility, control, and operational confidence
+- **Modular** — install only the plugins and themes that fit your workflow
+- **Cohesive** — individual extensions should feel like parts of the same workbench
