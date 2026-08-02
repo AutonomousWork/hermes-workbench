@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = REPO_ROOT / "dashboard"
+INSTALLER = REPO_ROOT / "scripts" / "install.sh"
 
 
 class PluginContractTests(unittest.TestCase):
@@ -48,6 +52,69 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn(".nesquena-control", stylesheet)
         self.assertIn("var(--color-card)", stylesheet)
         self.assertIn("var(--color-border)", stylesheet)
+
+    def test_installer_repoints_a_verified_existing_plugin_symlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_root = Path(td)
+            legacy_plugin = temp_root / "legacy-plugin"
+            legacy_plugin.mkdir()
+            (legacy_plugin / "plugin.yaml").write_text(
+                "name: nesquena-webui-control\n"
+            )
+
+            hermes_home = temp_root / "hermes-home"
+            plugins_dir = hermes_home / "plugins"
+            plugins_dir.mkdir(parents=True)
+            install_path = plugins_dir / "nesquena-webui-control"
+            install_path.symlink_to(legacy_plugin)
+
+            fake_bin = temp_root / "bin"
+            fake_bin.mkdir()
+            fake_hermes = fake_bin / "hermes"
+            fake_hermes.write_text("#!/bin/sh\nexit 0\n")
+            fake_hermes.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment["HERMES_HOME"] = str(hermes_home)
+            environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+            result = subprocess.run(
+                [str(INSTALLER)],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(install_path.resolve(), REPO_ROOT.resolve())
+            self.assertIn("Updated NesQuena WebUI Control", result.stdout)
+
+    def test_installer_refuses_to_repoint_an_unrelated_plugin_symlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_root = Path(td)
+            unrelated_plugin = temp_root / "unrelated-plugin"
+            unrelated_plugin.mkdir()
+            (unrelated_plugin / "plugin.yaml").write_text("name: another-plugin\n")
+
+            hermes_home = temp_root / "hermes-home"
+            plugins_dir = hermes_home / "plugins"
+            plugins_dir.mkdir(parents=True)
+            install_path = plugins_dir / "nesquena-webui-control"
+            install_path.symlink_to(unrelated_plugin)
+
+            environment = os.environ.copy()
+            environment["HERMES_HOME"] = str(hermes_home)
+            result = subprocess.run(
+                [str(INSTALLER)],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(install_path.resolve(), unrelated_plugin.resolve())
+            self.assertIn("Refusing to replace existing path", result.stderr)
 
 
 if __name__ == "__main__":

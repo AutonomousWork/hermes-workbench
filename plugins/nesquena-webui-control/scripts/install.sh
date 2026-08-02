@@ -10,6 +10,11 @@ mkdir -p "$PLUGIN_ROOT"
 
 if [ -L "$INSTALL_PATH" ] && [ "$(readlink "$INSTALL_PATH")" = "$REPO_DIR" ]; then
   echo "NesQuena WebUI Control is already installed at $INSTALL_PATH"
+elif [ -L "$INSTALL_PATH" ] && [ -f "$INSTALL_PATH/plugin.yaml" ] && \
+  grep -Eq '^[[:space:]]*name:[[:space:]]*nesquena-webui-control[[:space:]]*$' \
+    "$INSTALL_PATH/plugin.yaml"; then
+  ln -sfn "$REPO_DIR" "$INSTALL_PATH"
+  echo "Updated NesQuena WebUI Control at $INSTALL_PATH"
 elif [ -e "$INSTALL_PATH" ] || [ -L "$INSTALL_PATH" ]; then
   echo "Refusing to replace existing path: $INSTALL_PATH" >&2
   exit 1

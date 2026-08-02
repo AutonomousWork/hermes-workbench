@@ -25,17 +25,17 @@ plugin API route.
 
 ## Install
 
-Clone this repository anywhere, then run:
+From the `hermes-workbench` repository root, run:
 
 ```sh
-./scripts/install.sh
+./plugins/nesquena-webui-control/scripts/install.sh
 ```
 
 The installer creates this symlink and enables the plugin without granting it
 permission to override any built-in Hermes tools:
 
 ```text
-~/.hermes/plugins/nesquena-webui-control -> <this repository>
+~/.hermes/plugins/nesquena-webui-control -> <hermes-workbench>/plugins/nesquena-webui-control
 ```
 
 Restart `hermes dashboard` once after installation. Backend API routes are
