@@ -43,6 +43,11 @@ From this repository, run:
 ./plugins/buzz-control/scripts/install.sh
 ```
 
+The installer symlinks this checkout's `plugins/buzz-control` directory into
+`~/.hermes/plugins/`. Run it from a persistent checkout of `main`; the symlink
+does not follow Git branch names. If the linked checkout is switched to a
+branch that omits Buzz Control, Hermes can no longer discover the plugin.
+
 The installer enables the plugin, copies a regular wrapper into
 `~/.hermes/scripts/`, and creates the 12-hour job only if it does not already
 exist. Restart the Hermes dashboard after the first install so its Python API
