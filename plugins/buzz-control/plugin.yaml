@@ -1,0 +1,4 @@
+name: buzz-control
+version: 1.0.0
+description: "Dashboard health, relay location, release visibility, and updates for a local Buzz deployment."
+hooks: []

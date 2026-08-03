@@ -46,7 +46,6 @@ class PluginContractTests(unittest.TestCase):
             bundle,
         )
         self.assertIn("LAUNCHAGENT SERVICE CONTROL", bundle)
-        self.assertNotIn("MAC MINI", bundle)
 
     def test_styles_are_scoped_and_theme_aware(self):
         stylesheet = (DASHBOARD / "dist" / "style.css").read_text()

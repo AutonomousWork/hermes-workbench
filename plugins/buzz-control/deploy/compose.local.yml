@@ -1,0 +1,30 @@
+services:
+  relay:
+    env_file: !override
+      - ${BUZZ_SERVICE_ENV_FILE:-.env.local}
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}?sslmode=require
+      BUZZ_GIT_CONFORMANCE_PROBE: "false"
+      BUZZ_SERVE_GIT_WEB_GUI: "false"
+    ports: !override
+      - "127.0.0.1:${BUZZ_HTTP_PORT:-3300}:3000"
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks: !override
+      - buzz-net
+      - proxima
+
+  # This local deployment reuses Postgres from the configured external network.
+  postgres:
+    profiles:
+      - bundled-postgres
+
+networks:
+  proxima:
+    external: true
+    name: ${PROXIMA_DOCKER_NETWORK:-proxima_default}
