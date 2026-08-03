@@ -1,6 +1,6 @@
 # Buzz Control for Hermes
 
-Buzz Control operates a local [Buzz](https://github.com/block/buzz) relay from
+Buzz Control manages a local [Buzz](https://github.com/block/buzz) relay from
 the Hermes dashboard.
 
 The **Buzz** tab shows server health, relay location, the running image, the
