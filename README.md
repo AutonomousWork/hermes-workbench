@@ -14,7 +14,12 @@ An unofficial, Linear-inspired dark theme for the built-in Hermes Agent web dash
 
 ## Plugins
 
-- **[Nesquena WebUI Control](./plugins/nesquena-webui-control)** — Start, stop, restart, and inspect the Nesquena WebUI from the Hermes dashboard.
+### [Nesquena WebUI Control](./plugins/nesquena-webui-control)
+
+Start, stop, restart, and inspect a launchd-managed Nesquena WebUI from the Hermes Agent web dashboard.
+
+![Hermes Dashboard using the Nesquena WebUI Control plugin](./plugins/nesquena-webui-control/nesquena-webui-control.png)
+
 - **Blocks Buzz** *(coming soon)* — Server health monitoring and management.
 - **Backboard** *(coming soon)* — Status and visibility for backup scripts covering Hermes and supported components, including macOS LaunchAgents and Cloudflare R2.
 

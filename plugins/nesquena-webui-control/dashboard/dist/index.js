@@ -13,7 +13,7 @@
   const { React } = SDK;
   const h = React.createElement;
   const { Card, CardContent, CardHeader, CardTitle, Badge, Button } = SDK.components;
-  const { useCallback, useEffect, useState } = SDK.hooks;
+  const { useCallback, useEffect, useRef, useState } = SDK.hooks;
   const API_ROOT = "/api/plugins/nesquena-webui-control";
 
   function api(path, options) {
@@ -53,6 +53,8 @@
     const [busy, setBusy] = useState(null);
     const [notice, setNotice] = useState(null);
     const [error, setError] = useState(null);
+    const actionActiveRef = useRef(false);
+    const pollGenerationRef = useRef(0);
 
     const refresh = useCallback(function () {
       setError(null);
@@ -72,11 +74,29 @@
       let inFlight = false;
 
       function poll() {
-        if (!active || inFlight) return;
+        if (!active || inFlight || actionActiveRef.current) return;
+        const generation = pollGenerationRef.current;
         inFlight = true;
         api("/status")
-          .then(function (next) { if (active) setStatus(next); })
-          .catch(function (failure) { if (active) setError(errorMessage(failure)); })
+          .then(function (next) {
+            if (
+              active &&
+              !actionActiveRef.current &&
+              generation === pollGenerationRef.current
+            ) {
+              setStatus(next);
+              setError(null);
+            }
+          })
+          .catch(function (failure) {
+            if (
+              active &&
+              !actionActiveRef.current &&
+              generation === pollGenerationRef.current
+            ) {
+              setError(errorMessage(failure));
+            }
+          })
           .finally(function () { inFlight = false; });
       }
 
@@ -89,11 +109,13 @@
     }, []);
 
     function runAction(action) {
-      if (busy) return;
+      if (busy || actionActiveRef.current) return;
       if (action === "stop" && !window.confirm(
         "Stop the NesQuena WebUI? You can start it again from this page."
       )) return;
 
+      actionActiveRef.current = true;
+      pollGenerationRef.current += 1;
       setBusy(action);
       setError(null);
       setNotice(null);
@@ -106,6 +128,7 @@
           setError(errorMessage(failure));
         })
         .finally(function () {
+          actionActiveRef.current = false;
           setBusy(null);
         });
     }
@@ -134,7 +157,7 @@
     return h("div", { className: "nesquena-control" },
       h("div", { className: "nesquena-control__hero" },
         h("div", null,
-          h("div", { className: "nesquena-control__eyebrow" }, "MAC MINI SERVICE CONTROL"),
+          h("div", { className: "nesquena-control__eyebrow" }, "LAUNCHAGENT SERVICE CONTROL"),
           h("h1", null, "Nesquena WebUI"),
           h("p", null,
             "Control the local WebUI LaunchAgent after Hermes updates or whenever the interface needs recovery."
