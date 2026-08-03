@@ -1,0 +1,4 @@
+name: nesquena-webui-control
+version: 1.0.0
+description: "Dashboard-only controls for the Nesquena WebUI LaunchAgent on macOS."
+hooks: []
