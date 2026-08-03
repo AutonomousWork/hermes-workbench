@@ -81,6 +81,10 @@
     return RESULT_LABELS[result] || "Hermes has no reliable saved update result.";
   }
 
+  function resultFailed(result) {
+    return !!result && result !== "already_current" && result !== "updated";
+  }
+
   function managedSchedule(jobs) {
     const matches = Array.isArray(jobs)
       ? jobs.filter(function (job) { return job && job.name === JOB_NAME; })
@@ -368,12 +372,13 @@
             h("div", { className: "buzz-control__operation" },
               h("strong", null, resultLabel(updateState.result)),
               h("dl", { className: "buzz-control__details" },
-                h(DetailRow, { label: "Last check", value: formatDate(updateState.last_check_at || (updates && updates.checked_at)) }),
+                h(DetailRow, { label: "Latest check", value: formatDate(updateState.last_check_at || (updates && updates.checked_at)) }),
                 h(DetailRow, { label: "Trigger", value: updateState.trigger, mono: false }),
                 h(DetailRow, { label: "Last successful update", value: formatDate(updateState.last_successful_update_at) }),
-                h(DetailRow, { label: "Latest failure", value: updateState.latest_failure_result || "None", mono: false }),
               ),
-              updateState.latest_failure_error ? h("p", { className: "buzz-control__failure-detail" }, updateState.latest_failure_error) : null,
+              resultFailed(updateState.result) && updateState.error
+                ? h("div", { className: "buzz-control__message buzz-control__message--error", role: "alert" }, updateState.error)
+                : null,
             ),
 
             h("div", { className: "buzz-control__schedule" },

@@ -116,14 +116,46 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
     throw new Error("button not found: " + label);
   }
 
+  function detailValue(label) {
+    const pending = [tree];
+    while (pending.length) {
+      const node = pending.pop();
+      if (!node || typeof node !== "object") continue;
+      if (
+        typeof node.type === "function"
+        && node.type.name === "DetailRow"
+        && node.props.label === label
+      ) return node.props.value;
+      pending.push.apply(pending, node.props && node.props.children || []);
+    }
+    return undefined;
+  }
+
+  function textContent() {
+    const text = [];
+    const pending = [tree];
+    while (pending.length) {
+      const node = pending.shift();
+      if (typeof node === "string" || typeof node === "number") {
+        text.push(String(node));
+        continue;
+      }
+      if (!node || typeof node !== "object") continue;
+      pending.push.apply(pending, node.props && node.props.children || []);
+    }
+    return text.join(" ");
+  }
+
   return {
     button: button,
     confirmations: confirmations,
+    detailValue: detailValue,
     intervals: intervals,
     requests: requests,
     rerender: function () { hookCursor = 0; tree = component(); },
     runEffects: function () { return effects.map(function (effect) { return effect(); }); },
     state: state,
+    textContent: textContent,
   };
 }
 
@@ -281,6 +313,81 @@ async function stoppedRelayUsesExplicitStartCopy() {
   assert.match(harness.confirmations[0], /will start the relay/i);
 }
 
+async function successfulLatestCheckHidesHistoricalFailure() {
+  const cases = [
+    {
+      result: "updated",
+      lastCheck: "latest-check-from-state",
+      expectedMessage: /Buzz was updated and is healthy/i,
+    },
+    {
+      result: "already_current",
+      lastCheck: null,
+      expectedMessage: /Buzz is current and healthy/i,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const status = deferred();
+    const updates = deferred();
+    const cron = deferred();
+    const harness = createHarness([status], [updates], [], [cron]);
+
+    harness.runEffects();
+    status.resolve({ healthy: true, container: { running: true } });
+    updates.resolve({
+      update_available: false,
+      checked_at: "latest-check-fallback",
+      errors: [],
+      state: {
+        result: testCase.result,
+        error: null,
+        last_check_at: testCase.lastCheck,
+        latest_failure_result: "verification_failed",
+        latest_failure_error: "An older verification failed.",
+      },
+    });
+    cron.resolve([]);
+    await drainPromises();
+    harness.rerender();
+
+    assert.equal(
+      harness.detailValue("Latest check"),
+      testCase.lastCheck || "latest-check-fallback",
+    );
+    assert.equal(harness.detailValue("Latest failure"), undefined);
+    assert.doesNotMatch(harness.textContent(), /older verification failed/i);
+    assert.match(harness.textContent(), testCase.expectedMessage);
+  }
+}
+
+async function failedLatestCheckShowsOnlyTheCurrentError() {
+  const status = deferred();
+  const updates = deferred();
+  const cron = deferred();
+  const harness = createHarness([status], [updates], [], [cron]);
+
+  harness.runEffects();
+  status.resolve({ healthy: true, container: { running: true } });
+  updates.resolve({
+    update_available: null,
+    errors: [],
+    state: {
+      result: "pull_failed",
+      error: "The current image pull failed.",
+      latest_failure_result: "verification_failed",
+      latest_failure_error: "An older verification failed.",
+    },
+  });
+  cron.resolve([]);
+  await drainPromises();
+  harness.rerender();
+
+  assert.equal(harness.detailValue("Latest failure"), undefined);
+  assert.match(harness.textContent(), /current image pull failed/i);
+  assert.doesNotMatch(harness.textContent(), /older verification failed/i);
+}
+
 async function main() {
   await pollsHealthAndUpdatesAtDifferentIntervals();
   await successfulStatusPollClearsTransientError();
@@ -288,6 +395,8 @@ async function main() {
   await manualRefreshLoadsBothResources();
   await stalePollsCannotOverwriteRefreshResult();
   await stoppedRelayUsesExplicitStartCopy();
+  await successfulLatestCheckHidesHistoricalFailure();
+  await failedLatestCheckShowsOnlyTheCurrentError();
 }
 
 main().catch(function (error) {
