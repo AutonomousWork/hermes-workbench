@@ -4,23 +4,6 @@ Opinionated plugins and themes for shaping Hermes Agent into an integrated comma
 
 Each addition is intentionally designed to be lightweight and non-duplicative with core functionality.
 
-## Installing plugins
-
-Plugin installers symlink their source directory into `~/.hermes/plugins/`.
-The symlink follows the checkout path, not its Git branch, so install from a
-persistent checkout of `main`. If you use your primary checkout for feature
-branches, keep a dedicated `main` worktree for installed plugins:
-
-```sh
-git fetch origin main
-git worktree add ../hermes-workbench-main main
-../hermes-workbench-main/plugins/buzz-control/scripts/install.sh
-```
-
-Update that worktree with `git -C ../hermes-workbench-main pull --ff-only`.
-Switching the linked checkout to a branch that omits a plugin makes Hermes stop
-discovering it until the checkout or symlink is corrected.
-
 ## Plugins
 
 ### [Buzz Control](./plugins/buzz-control)
