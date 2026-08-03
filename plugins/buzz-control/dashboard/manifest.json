@@ -1,0 +1,14 @@
+{
+  "name": "buzz-control",
+  "label": "Buzz",
+  "description": "Inspect the local Buzz relay, see saved image checks, and safely apply the newest relay image.",
+  "icon": "RadioTower",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/buzz",
+    "position": "after:achievements"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
