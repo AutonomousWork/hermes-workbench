@@ -124,6 +124,14 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn(".buzz-control", stylesheet)
         self.assertIn("var(--color-card)", stylesheet)
         self.assertIn("var(--color-border)", stylesheet)
+        self.assertRegex(
+            stylesheet,
+            r"(?s)\.buzz-control__relay-primary--local\s*\{[^}]*#d4a72c",
+        )
+        self.assertRegex(
+            stylesheet,
+            r"(?s)\.buzz-control__relay-primary--tailscale\s*\{[^}]*#3fb97d",
+        )
         self.assertNotIn(".nesquena-control", stylesheet)
 
     def _run_fake_updater(

@@ -148,10 +148,19 @@
   display: grid;
   gap: 0.45rem;
   margin-bottom: 0.75rem;
-  border: 1px solid color-mix(in srgb, #d4a72c 40%, var(--color-border));
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md, 0.5rem);
   padding: 0.85rem;
+}
+
+.buzz-control__relay-primary--local {
+  border-color: color-mix(in srgb, #d4a72c 40%, var(--color-border));
   background: color-mix(in srgb, #d4a72c 7%, transparent);
+}
+
+.buzz-control__relay-primary--tailscale {
+  border-color: color-mix(in srgb, #3fb97d 52%, var(--color-border));
+  background: color-mix(in srgb, #3fb97d 9%, transparent);
 }
 
 .buzz-control__relay-primary span {

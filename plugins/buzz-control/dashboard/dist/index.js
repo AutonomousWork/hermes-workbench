@@ -100,6 +100,21 @@
     return { label: "Version unknown", tone: "warning" };
   }
 
+  function relayPresentation(relay) {
+    const publicUrl = relay && relay.public_url;
+    if (publicUrl) {
+      try {
+        const hostname = new window.URL(publicUrl).hostname.toLowerCase().replace(/\.$/, "");
+        if (hostname.endsWith(".ts.net")) {
+          return { label: "Tailscale configured", tone: "tailscale" };
+        }
+      } catch (_error) {
+        // The backend owns URL validation; malformed display data uses the safe fallback.
+      }
+    }
+    return { label: relay && relay.scope || "Local only", tone: "local" };
+  }
+
   const RESULT_LABELS = {
     already_current: "Buzz is current and healthy.",
     baseline_missing: "Verify the running configuration, then adopt it before saving or applying changes.",
@@ -533,6 +548,7 @@
     const container = status && status.container;
     const probe = status && status.probe;
     const relay = status && status.relay;
+    const relayView = relayPresentation(relay);
     const deployment = status && status.deployment;
     const current = updates && updates.current;
     const latest = updates && updates.latest;
@@ -802,8 +818,10 @@
         h(Card, { className: "buzz-control__card" },
           h(CardHeader, null, h(CardTitle, null, "Relay location")),
           h(CardContent, null,
-            h("div", { className: "buzz-control__relay-primary" },
-              h("span", null, relay && relay.scope || "Relay"),
+            h("div", {
+              className: "buzz-control__relay-primary buzz-control__relay-primary--" + relayView.tone,
+            },
+              h("span", null, relayView.label),
               h("code", null, relay && relay.public_url || "—"),
             ),
             h("dl", { className: "buzz-control__details" },
