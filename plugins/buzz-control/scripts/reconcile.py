@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import NamedTuple
 
@@ -344,8 +345,10 @@ class Reconciler:
         port = self._http_port(env_file)
         timeout = min(3.0, self._remaining())
         try:
-            with http.client.HTTPConnection(
-                self.settings.local_host, port, timeout=timeout
+            with closing(
+                http.client.HTTPConnection(
+                    self.settings.local_host, port, timeout=timeout
+                )
             ) as connection:
                 connection.request("GET", self.settings.health_path)
                 response = connection.getresponse()
