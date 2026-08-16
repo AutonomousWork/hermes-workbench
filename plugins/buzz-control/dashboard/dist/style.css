@@ -318,7 +318,8 @@
 }
 
 .buzz-control__config-control input,
-.buzz-control__config-control select {
+.buzz-control__config-control select,
+.buzz-control__schedule-cadence select {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--color-border);
@@ -331,14 +332,16 @@
 }
 
 .buzz-control__config-control input:focus-visible,
-.buzz-control__config-control select:focus-visible {
+.buzz-control__config-control select:focus-visible,
+.buzz-control__schedule-cadence select:focus-visible {
   outline: 2px solid #d4a72c;
   outline-offset: 2px;
 }
 
 .buzz-control__config-control input:read-only,
 .buzz-control__config-control input:disabled,
-.buzz-control__config-control select:disabled {
+.buzz-control__config-control select:disabled,
+.buzz-control__schedule-cadence select:disabled {
   color: var(--color-muted-foreground);
   opacity: 0.78;
 }
@@ -466,8 +469,93 @@
 }
 
 .buzz-control__schedule .buzz-control__details,
+.buzz-control__schedule-controls,
+.buzz-control__schedule-hint,
+.buzz-control__schedule-unavailable,
 .buzz-control__cron-link {
   grid-column: 1 / -1;
+}
+
+.buzz-control__schedule-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px) auto;
+  gap: 0.75rem;
+  align-items: end;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.75rem;
+}
+
+.buzz-control__schedule-mode {
+  grid-column: 1;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.buzz-control__schedule-mode legend,
+.buzz-control__schedule-cadence > span {
+  margin-bottom: 0.45rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.buzz-control__schedule-mode-options {
+  display: inline-grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 2px;
+  width: fit-content;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.35rem);
+  padding: 2px;
+  background: color-mix(in srgb, var(--color-background) 55%, transparent);
+}
+
+.buzz-control__schedule-mode-options > button {
+  min-height: 2rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm, 0.35rem) - 2px);
+  padding: 0.35rem 0.7rem;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  box-shadow: none;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.buzz-control__schedule-mode-options > button:hover:not(:disabled) {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+}
+
+.buzz-control__schedule-mode-options [aria-pressed="true"] {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, #3fb97d 13%, var(--color-card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #3fb97d 38%, var(--color-border));
+}
+
+.buzz-control__schedule-cadence {
+  display: grid;
+  grid-column: 2;
+  justify-self: end;
+  width: 100%;
+  min-width: 0;
+}
+
+.buzz-control__schedule-controls > button {
+  grid-column: 3;
+  min-height: 2.1rem;
+  justify-self: end;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.buzz-control__schedule-hint,
+.buzz-control__schedule-unavailable {
+  border-left: 2px solid #d4a72c;
+  padding-left: 0.65rem;
 }
 
 .buzz-control__cron-link {
@@ -499,6 +587,10 @@
   .buzz-control__card--updates {
     grid-column: auto;
   }
+
+  .buzz-control__schedule-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(170px, 220px) auto;
+  }
 }
 
 @media (max-width: 520px) {
@@ -528,7 +620,32 @@
     grid-template-columns: 1fr;
   }
 
+  .buzz-control__schedule-controls {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .buzz-control__schedule-controls > button {
+    grid-column: 2;
+  }
+
+  .buzz-control__schedule-cadence {
+    grid-column: 1;
+    justify-self: stretch;
+  }
+
+  .buzz-control__schedule-mode {
+    grid-column: 1 / -1;
+  }
+
+  .buzz-control__schedule-mode-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
   .buzz-control__schedule .buzz-control__details,
+  .buzz-control__schedule-controls,
+  .buzz-control__schedule-hint,
+  .buzz-control__schedule-unavailable,
   .buzz-control__cron-link {
     grid-column: auto;
   }

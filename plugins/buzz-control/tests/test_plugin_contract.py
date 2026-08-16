@@ -35,14 +35,14 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(manifest["entry"], "dist/index.js")
         self.assertEqual(manifest["css"], "dist/style.css")
         self.assertEqual(manifest["api"], "plugin_api.py")
-        self.assertEqual(manifest["version"], "1.1.0")
+        self.assertEqual(manifest["version"], "1.2.0")
 
     def test_release_metadata_and_operator_runbook_cover_config_trust_model(self):
         runtime_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text()
         readme = (PLUGIN_ROOT / "README.md").read_text().lower()
         installer = INSTALLER.read_text()
 
-        self.assertIn("version: 1.1.0", runtime_manifest)
+        self.assertIn("version: 1.2.0", runtime_manifest)
         for required in (
             "not projected",
             "baseline_missing",
@@ -71,6 +71,10 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("Latest updates", bundle)
         self.assertIn("Managed schedule", bundle)
         self.assertIn("buzz-control-image-update", bundle)
+        self.assertIn('"Saving…" : "Save"', bundle)
+        self.assertIn('modeTarget === "scheduled" ? "resume" : "pause"', bundle)
+        self.assertIn('{ value: "every 60m", label: "Every hour" }', bundle)
+        self.assertIn('{ value: "every 10080m", label: "Weekly" }', bundle)
         self.assertIn('href: "/cron"', bundle)
         self.assertNotIn("Recent changes on main", bundle)
 
@@ -132,6 +136,9 @@ class PluginContractTests(unittest.TestCase):
             stylesheet,
             r"(?s)\.buzz-control__relay-primary--tailscale\s*\{[^}]*#3fb97d",
         )
+        self.assertIn(".buzz-control__schedule-controls", stylesheet)
+        self.assertIn(".buzz-control__schedule-mode-options > button", stylesheet)
+        self.assertIn('.buzz-control__schedule-mode-options [aria-pressed="true"]', stylesheet)
         self.assertNotIn(".nesquena-control", stylesheet)
 
     def _run_fake_updater(

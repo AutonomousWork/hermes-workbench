@@ -13,6 +13,15 @@
   const API_ROOT = "/api/plugins/buzz-control";
   const CRON_URL = "/api/cron/jobs?profile=all";
   const JOB_NAME = "buzz-control-image-update";
+  const SCHEDULE_OPTIONS = [
+    { value: "every 60m", label: "Every hour" },
+    { value: "every 180m", label: "Every 3 hours" },
+    { value: "every 360m", label: "Every 6 hours" },
+    { value: "every 720m", label: "Every 12 hours" },
+    { value: "every 1440m", label: "Daily" },
+    { value: "every 4320m", label: "Every 3 days" },
+    { value: "every 10080m", label: "Weekly" },
+  ];
   const RECOVERY_PHASES = new Set([
     "saving",
     "restoring",
@@ -52,6 +61,17 @@
 
   function cronApi() {
     return SDK.fetchJSON(CRON_URL);
+  }
+
+  function cronJobApi(job, action, options) {
+    const suffix = action ? "/" + action : "";
+    const profile = job && job.profile
+      ? "?profile=" + encodeURIComponent(job.profile)
+      : "";
+    return SDK.fetchJSON(
+      "/api/cron/jobs/" + encodeURIComponent(job.id) + suffix + profile,
+      options,
+    );
   }
 
   function errorMessage(error) {
@@ -147,6 +167,41 @@
     return Object.assign({}, job, { status: active ? "active" : "paused" });
   }
 
+  function scheduleMode(schedule) {
+    if (!schedule) return "";
+    if (schedule.status === "active") return "scheduled";
+    if (schedule.status === "paused") return "manual";
+    return "";
+  }
+
+  function scheduleExpression(schedule) {
+    const value = schedule && schedule.schedule;
+    if (value && value.kind === "interval") {
+      const minutes = Number(value.minutes);
+      if (Number.isInteger(minutes) && minutes > 0) return "every " + minutes + "m";
+    }
+    if (value && typeof value.expr === "string" && value.expr.trim()) {
+      return value.expr.trim();
+    }
+    return schedule && typeof schedule.schedule_display === "string"
+      ? schedule.schedule_display.trim()
+      : "";
+  }
+
+  function scheduleCadenceLabel(schedule) {
+    const value = schedule && schedule.schedule;
+    const minutes = value && value.kind === "interval" ? Number(value.minutes) : 0;
+    if (Number.isInteger(minutes) && minutes > 0) {
+      if (minutes === 60) return "Every hour";
+      if (minutes === 1440) return "Daily";
+      if (minutes === 10080) return "Weekly";
+      if (minutes % 1440 === 0) return "Every " + (minutes / 1440) + " days";
+      if (minutes % 60 === 0) return "Every " + (minutes / 60) + " hours";
+      return "Every " + minutes + " minutes";
+    }
+    return schedule && (schedule.schedule_display || (value && value.display)) || "—";
+  }
+
   function initialDrafts(configuration) {
     const drafts = {};
     (configuration && configuration.fields || []).forEach(function (field) {
@@ -208,6 +263,14 @@
     const [updatesError, setUpdatesError] = useState(null);
     const [schedule, setSchedule] = useState(null);
     const [scheduleError, setScheduleError] = useState(null);
+    const [scheduleModeDraft, setScheduleModeDraft] = useState("");
+    const [scheduleCadenceDraft, setScheduleCadenceDraft] = useState("");
+    const scheduleModeDraftRef = useRef("");
+    const scheduleCadenceDraftRef = useRef("");
+    const scheduleModeTouchedRef = useRef(false);
+    const scheduleCadenceTouchedRef = useRef(false);
+    const scheduleJobIdentityRef = useRef("");
+    const scheduleErrorSourceRef = useRef(null);
     const actionActiveRef = useRef(false);
     const generationRef = useRef(0);
     const [view, setView] = useState("dashboard");
@@ -248,19 +311,53 @@
         });
     }, [acceptUpdates]);
 
+    const acceptSchedule = useCallback(function (jobs, forceDrafts, preserveDrafts) {
+      const next = managedSchedule(jobs);
+      const identity = next && next.id
+        ? String(next.profile || "") + ":" + String(next.id)
+        : "";
+      const identityChanged = identity !== scheduleJobIdentityRef.current;
+      const mode = scheduleMode(next);
+      const cadence = scheduleExpression(next);
+      setSchedule(next);
+      scheduleJobIdentityRef.current = identity;
+      if (scheduleErrorSourceRef.current !== "mutation") setScheduleError(null);
+      if (forceDrafts || (identityChanged && !preserveDrafts)) {
+        scheduleModeDraftRef.current = mode;
+        scheduleCadenceDraftRef.current = cadence;
+        scheduleModeTouchedRef.current = false;
+        scheduleCadenceTouchedRef.current = false;
+        setScheduleModeDraft(mode);
+        setScheduleCadenceDraft(cadence);
+      } else {
+        if (scheduleModeTouchedRef.current && scheduleModeDraftRef.current === mode) {
+          scheduleModeTouchedRef.current = false;
+        }
+        if (scheduleCadenceTouchedRef.current && scheduleCadenceDraftRef.current === cadence) {
+          scheduleCadenceTouchedRef.current = false;
+        }
+        if (!scheduleModeTouchedRef.current) {
+          scheduleModeDraftRef.current = mode;
+          setScheduleModeDraft(mode);
+        }
+        if (!scheduleCadenceTouchedRef.current) {
+          scheduleCadenceDraftRef.current = cadence;
+          setScheduleCadenceDraft(cadence);
+        }
+      }
+      return next;
+    }, []);
+
     const refreshSchedule = useCallback(function () {
       return cronApi()
         .then(function (jobs) {
-          const next = managedSchedule(jobs);
-          setSchedule(next);
-          setScheduleError(null);
-          return next;
+          return acceptSchedule(jobs, false);
         })
         .catch(function (failure) {
           setScheduleError(errorMessage(failure));
           throw failure;
         });
-    }, []);
+    }, [acceptSchedule]);
 
     useEffect(function () {
       if (view !== "dashboard") return undefined;
@@ -340,8 +437,7 @@
         cronApi()
           .then(function (jobs) {
             if (active && !actionActiveRef.current && generation === generationRef.current) {
-              setSchedule(managedSchedule(jobs));
-              setScheduleError(null);
+              acceptSchedule(jobs, false);
             }
           })
           .catch(function (failure) {
@@ -354,7 +450,7 @@
       pollSchedule();
       const timer = window.setInterval(pollSchedule, 60000);
       return function () { active = false; window.clearInterval(timer); };
-    }, [view]);
+    }, [acceptSchedule, view]);
 
     function runUpdate() {
       if (busy || actionActiveRef.current) return;
@@ -390,6 +486,89 @@
         .then(function (results) {
           if (results.every(function (result) { return result.status === "fulfilled"; })) {
             setNotice("Buzz status, updates, and schedule refreshed.");
+          }
+        })
+        .finally(function () { actionActiveRef.current = false; setBusy(null); });
+    }
+
+    function updateScheduleMode(nextMode) {
+      if (busy) return;
+      scheduleModeDraftRef.current = nextMode;
+      scheduleModeTouchedRef.current = nextMode !== scheduleMode(schedule);
+      setScheduleModeDraft(nextMode);
+    }
+
+    function updateScheduleCadence(nextCadence) {
+      if (busy) return;
+      scheduleCadenceDraftRef.current = nextCadence;
+      scheduleCadenceTouchedRef.current = nextCadence !== scheduleExpression(schedule);
+      setScheduleCadenceDraft(nextCadence);
+    }
+
+    function saveSchedule() {
+      if (busy || actionActiveRef.current || !scheduleEditable) return;
+
+      const cadenceChanged = scheduleCadenceTouchedRef.current
+        && scheduleCadenceDraftRef.current
+        && scheduleCadenceDraftRef.current !== scheduleExpression(schedule);
+      const modeChanged = scheduleModeTouchedRef.current
+        && scheduleModeDraftRef.current
+        && scheduleModeDraftRef.current !== scheduleMode(schedule);
+      if (!cadenceChanged && !modeChanged) return;
+
+      const cadenceTarget = scheduleCadenceDraftRef.current;
+      const modeTarget = scheduleModeDraftRef.current;
+
+      actionActiveRef.current = true;
+      generationRef.current += 1;
+      setBusy("schedule");
+      setNotice(null);
+      scheduleErrorSourceRef.current = null;
+      setScheduleError(null);
+
+      let failedSetting = "";
+      const appliedSettings = [];
+      let request = Promise.resolve(schedule);
+      if (cadenceChanged) {
+        request = request.then(function (job) {
+          failedSetting = "cadence";
+          return cronJobApi(job, "", jsonOptions("PUT", {
+            updates: { schedule: cadenceTarget },
+          }));
+        }).then(function (job) {
+          appliedSettings.push("Cadence");
+          acceptSchedule([job], false, true);
+          return job;
+        });
+      }
+      if (modeChanged) {
+        request = request.then(function (job) {
+          failedSetting = "update mode";
+          return cronJobApi(job, modeTarget === "scheduled" ? "resume" : "pause", {
+            method: "POST",
+          });
+        }).then(function (job) {
+          appliedSettings.push("Update mode");
+          acceptSchedule([job], false, true);
+          return job;
+        });
+      }
+
+      request
+        .then(function (job) {
+          acceptSchedule([job], true);
+          setNotice("Buzz update settings saved.");
+        })
+        .catch(function (failure) {
+          scheduleErrorSourceRef.current = "mutation";
+          const detail = errorMessage(failure);
+          if (appliedSettings.length) {
+            setScheduleError(
+              appliedSettings.join(" and ") + " saved, but " + failedSetting
+              + " could not be saved: " + detail,
+            );
+          } else {
+            setScheduleError(detail);
           }
         })
         .finally(function () { actionActiveRef.current = false; setBusy(null); });
@@ -557,11 +736,28 @@
     const latestIdentity = latest && (latest.revision || latest.image_id || latest.digest);
     const stopped = !!(container && !container.running);
     const scheduleLabel = !schedule ? "Checking" : ({
-      active: "Active",
-      paused: "Paused",
+      active: "Scheduled",
+      paused: "Manual only",
       missing: "Not installed",
       ambiguous: "Needs attention",
     }[schedule.status] || "Unknown");
+    const scheduleEditable = !!(schedule
+      && schedule.id
+      && (schedule.status === "active" || schedule.status === "paused"));
+    const scheduleDirty = scheduleEditable && (
+      (scheduleModeTouchedRef.current && scheduleModeDraft !== scheduleMode(schedule))
+      || (scheduleCadenceTouchedRef.current
+        && scheduleCadenceDraft !== scheduleExpression(schedule))
+    );
+    const cadenceOptions = SCHEDULE_OPTIONS.slice();
+    if (scheduleCadenceDraft && !cadenceOptions.some(function (option) {
+      return option.value === scheduleCadenceDraft;
+    })) {
+      cadenceOptions.unshift({
+        value: scheduleCadenceDraft,
+        label: "Current cadence (" + scheduleCadenceLabel(schedule) + ")",
+      });
+    }
     const probeLabel = probe && probe.reachable
       ? "HTTP " + probe.status_code + (probe.response ? " · " + probe.response : "")
       : "Unreachable";
@@ -871,11 +1067,57 @@
                 h("p", null, "Hermes checks for a new relay image without using an agent."),
               ),
               h(Badge, null, scheduleLabel),
+              h("div", { className: "buzz-control__schedule-controls" },
+                h("fieldset", {
+                  className: "buzz-control__schedule-mode",
+                  disabled: !scheduleEditable || !!busy,
+                },
+                  h("legend", null, "Update mode"),
+                  h("div", { className: "buzz-control__schedule-mode-options" },
+                    h(Button, {
+                      type: "button",
+                      variant: scheduleModeDraft === "scheduled" ? "default" : "outline",
+                      onClick: function () { updateScheduleMode("scheduled"); },
+                      disabled: !scheduleEditable || !!busy,
+                      "aria-pressed": scheduleModeDraft === "scheduled",
+                    }, "Scheduled"),
+                    h(Button, {
+                      type: "button",
+                      variant: scheduleModeDraft === "manual" ? "default" : "outline",
+                      onClick: function () { updateScheduleMode("manual"); },
+                      disabled: !scheduleEditable || !!busy,
+                      "aria-pressed": scheduleModeDraft === "manual",
+                    }, "Manual only"),
+                  ),
+                ),
+                h("label", { className: "buzz-control__schedule-cadence" },
+                  h("span", null, "Cadence"),
+                  h("select", {
+                    value: scheduleCadenceDraft,
+                    onChange: function (event) { updateScheduleCadence(event.target.value); },
+                    disabled: !scheduleEditable || !!busy || scheduleModeDraft !== "scheduled",
+                    "aria-label": "Update cadence",
+                  }, cadenceOptions.map(function (option) {
+                    return h("option", { value: option.value, key: option.value }, option.label);
+                  })),
+                ),
+                h(Button, {
+                  variant: "outline",
+                  onClick: saveSchedule,
+                  disabled: !scheduleDirty || !!busy,
+                  "aria-busy": busy === "schedule",
+                }, busy === "schedule" ? "Saving…" : "Save"),
+              ),
               h("dl", { className: "buzz-control__details" },
-                h(DetailRow, { label: "Cadence", value: schedule && (schedule.schedule_display || (schedule.schedule && schedule.schedule.display)) }),
+                h(DetailRow, { label: "Cadence", value: scheduleCadenceLabel(schedule) }),
                 h(DetailRow, { label: "Last run", value: formatDate(schedule && schedule.last_run_at) }),
                 h(DetailRow, { label: "Next run", value: formatDate(schedule && schedule.next_run_at) }),
               ),
+              !scheduleEditable
+                ? h("p", { className: "buzz-control__schedule-unavailable" }, "Create or repair it in Hermes Cron before changing update settings here.")
+                : scheduleModeDraft === "manual"
+                  ? h("p", { className: "buzz-control__schedule-hint" }, "Automatic checks are paused. Use Update Buzz whenever you want to check manually.")
+                  : null,
               h("a", { href: "/cron", className: "buzz-control__cron-link" }, "Manage in Hermes Cron"),
             ),
 

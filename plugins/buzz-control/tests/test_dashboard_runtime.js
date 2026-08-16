@@ -314,6 +314,302 @@ async function relayLocationDistinguishesTailscaleFromLocal() {
   assert.doesNotMatch(malformed.textContent(), /Tailscale configured/);
 }
 
+function cronJob(overrides) {
+  return Object.assign({
+    id: "buzz-job-id",
+    name: "buzz-control-image-update",
+    profile: "default",
+    enabled: true,
+    state: "scheduled",
+    schedule: {
+      kind: "interval",
+      minutes: 720,
+      display: "every 720m",
+    },
+    schedule_display: "every 720m",
+  }, overrides || {});
+}
+
+async function renderManagedSchedule(job, actionRequests) {
+  const status = deferred();
+  const updates = deferred();
+  const cron = deferred();
+  const harness = createHarness([status], [updates], actionRequests || [], [cron]);
+
+  harness.runEffects();
+  status.resolve({ healthy: true, container: { running: true } });
+  updates.resolve({ update_available: false, state: {}, errors: [] });
+  cron.resolve(job ? [job] : []);
+  await drainPromises();
+  harness.rerender();
+  return harness;
+}
+
+async function managedScheduleCadenceUsesHermesCronUpdate() {
+  const save = deferred();
+  const harness = await renderManagedSchedule(cronJob(), [save]);
+
+  assert.equal(harness.select("Update cadence").props.value, "every 720m");
+  assert.equal(harness.detailValue("Cadence"), "Every 12 hours");
+  assert.equal(harness.button("Save").props.disabled, true);
+
+  harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
+  harness.rerender();
+  harness.button("Save").props.onClick();
+  await drainPromises();
+
+  assert.equal(harness.requests[3].url, "/api/cron/jobs/buzz-job-id?profile=default");
+  assert.equal(harness.requests[3].options.method, "PUT");
+  assert.deepEqual(
+    JSON.parse(harness.requests[3].options.body),
+    { updates: { schedule: "every 360m" } },
+  );
+
+  save.resolve(cronJob({
+    schedule: { kind: "interval", minutes: 360, display: "every 360m" },
+    schedule_display: "every 360m",
+  }));
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Buzz update settings saved/);
+  assert.equal(harness.select("Update cadence").props.value, "every 360m");
+}
+
+async function customCronCadenceStartsAsCurrentAndClean() {
+  const expression = "15 2 * * 1-5";
+  const harness = await renderManagedSchedule(cronJob({
+    schedule: { kind: "cron", expr: expression, display: expression },
+    schedule_display: expression,
+  }));
+
+  assert.equal(harness.select("Update cadence").props.value, expression);
+  assert.match(harness.textContent(), /Current cadence \(15 2 \* \* 1-5\)/);
+  assert.equal(harness.button("Save").props.disabled, true);
+}
+
+async function combinedScheduleSaveUsesReturnedJobForModeMutation() {
+  const cadence = deferred();
+  const pause = deferred();
+  const harness = await renderManagedSchedule(cronJob(), [cadence, pause]);
+
+  harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
+  harness.button("Manual only").props.onClick();
+  harness.rerender();
+  harness.button("Save").props.onClick();
+  await drainPromises();
+
+  assert.equal(harness.requests[3].options.method, "PUT");
+  cadence.resolve(cronJob({
+    id: "updated-buzz-job-id",
+    schedule: { kind: "interval", minutes: 360, display: "every 360m" },
+    schedule_display: "every 360m",
+  }));
+  await drainPromises();
+
+  assert.equal(
+    harness.requests[4].url,
+    "/api/cron/jobs/updated-buzz-job-id/pause?profile=default",
+  );
+  pause.resolve(cronJob({
+    id: "updated-buzz-job-id",
+    enabled: false,
+    state: "paused",
+    schedule: { kind: "interval", minutes: 360, display: "every 360m" },
+    schedule_display: "every 360m",
+  }));
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Buzz update settings saved/);
+  assert.equal(harness.button("Save").props.disabled, true);
+}
+
+async function partialScheduleSaveRetainsOnlyFailedSetting() {
+  const cadence = deferred();
+  const pause = deferred();
+  const harness = await renderManagedSchedule(cronJob(), [cadence, pause]);
+
+  harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
+  harness.button("Manual only").props.onClick();
+  harness.rerender();
+  harness.button("Save").props.onClick();
+  cadence.resolve(cronJob({
+    schedule: { kind: "interval", minutes: 360, display: "every 360m" },
+    schedule_display: "every 360m",
+  }));
+  await drainPromises();
+  pause.reject(new Error('503: {"detail":"Pause unavailable"}'));
+  await drainPromises();
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Cadence saved, but update mode could not be saved: Pause unavailable/);
+  assert.equal(harness.select("Update cadence").props.value, "every 360m");
+  assert.equal(harness.button("Manual only").props["aria-pressed"], true);
+  assert.equal(harness.button("Save").props.disabled, false);
+}
+
+async function managedScheduleModePausesAndResumesExistingJob() {
+  const pause = deferred();
+  const resume = deferred();
+  const harness = await renderManagedSchedule(cronJob(), [pause, resume]);
+
+  assert.equal(harness.button("Scheduled").props["aria-pressed"], true);
+  harness.button("Manual only").props.onClick();
+  harness.rerender();
+  harness.button("Save").props.onClick();
+  await drainPromises();
+
+  assert.equal(
+    harness.requests[3].url,
+    "/api/cron/jobs/buzz-job-id/pause?profile=default",
+  );
+  assert.equal(harness.requests[3].options.method, "POST");
+
+  pause.resolve(cronJob({ enabled: false, state: "paused" }));
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Manual only/);
+  assert.equal(harness.button("Manual only").props["aria-pressed"], true);
+
+  harness.button("Scheduled").props.onClick();
+  harness.rerender();
+  harness.button("Save").props.onClick();
+  await drainPromises();
+
+  assert.equal(
+    harness.requests[4].url,
+    "/api/cron/jobs/buzz-job-id/resume?profile=default",
+  );
+  assert.equal(harness.requests[4].options.method, "POST");
+
+  resume.resolve(cronJob());
+  await drainPromises();
+  harness.rerender();
+  assert.equal(harness.button("Scheduled").props["aria-pressed"], true);
+}
+
+async function schedulePollingPreservesUnsavedSelection() {
+  const status = deferred();
+  const updates = deferred();
+  const initialCron = deferred();
+  const polledCron = deferred();
+  const harness = createHarness([status], [updates], [], [initialCron, polledCron]);
+
+  harness.runEffects();
+  status.resolve({ healthy: true, container: { running: true } });
+  updates.resolve({ update_available: false, state: {}, errors: [] });
+  initialCron.resolve([cronJob()]);
+  await drainPromises();
+  harness.rerender();
+
+  harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
+  harness.rerender();
+  harness.intervals[2].callback();
+  polledCron.resolve([cronJob()]);
+  await drainPromises();
+  harness.rerender();
+
+  assert.equal(harness.select("Update cadence").props.value, "every 360m");
+  assert.equal(harness.button("Save").props.disabled, false);
+}
+
+async function modeDraftDoesNotOverwriteExternalCadenceChange() {
+  const status = deferred();
+  const updates = deferred();
+  const initialCron = deferred();
+  const polledCron = deferred();
+  const pause = deferred();
+  const harness = createHarness(
+    [status], [updates], [pause], [initialCron, polledCron],
+  );
+
+  harness.runEffects();
+  status.resolve({ healthy: true, container: { running: true } });
+  updates.resolve({ update_available: false, state: {}, errors: [] });
+  initialCron.resolve([cronJob()]);
+  await drainPromises();
+  harness.rerender();
+
+  harness.button("Manual only").props.onClick();
+  harness.rerender();
+  harness.intervals[2].callback();
+  polledCron.resolve([cronJob({
+    schedule: { kind: "interval", minutes: 360, display: "every 360m" },
+    schedule_display: "every 360m",
+  })]);
+  await drainPromises();
+  harness.rerender();
+
+  assert.equal(harness.select("Update cadence").props.value, "every 360m");
+  harness.button("Save").props.onClick();
+  await drainPromises();
+  assert.equal(harness.requests[4].options.method, "POST");
+  assert.match(harness.requests[4].url, /\/pause\?profile=default$/);
+  pause.resolve(cronJob({ enabled: false, state: "paused" }));
+  await drainPromises();
+}
+
+async function revertedScheduleDraftResynchronizesOnExternalPoll() {
+  const status = deferred();
+  const updates = deferred();
+  const initialCron = deferred();
+  const polledCron = deferred();
+  const harness = createHarness([status], [updates], [], [initialCron, polledCron]);
+
+  harness.runEffects();
+  status.resolve({ healthy: true, container: { running: true } });
+  updates.resolve({ update_available: false, state: {}, errors: [] });
+  initialCron.resolve([cronJob()]);
+  await drainPromises();
+  harness.rerender();
+
+  harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
+  harness.rerender();
+  harness.select("Update cadence").props.onChange({ target: { value: "every 720m" } });
+  harness.rerender();
+  assert.equal(harness.button("Save").props.disabled, true);
+
+  harness.intervals[2].callback();
+  polledCron.resolve([cronJob({
+    schedule: { kind: "interval", minutes: 180, display: "every 180m" },
+    schedule_display: "every 180m",
+  })]);
+  await drainPromises();
+  harness.rerender();
+
+  assert.equal(harness.select("Update cadence").props.value, "every 180m");
+  assert.equal(harness.button("Save").props.disabled, true);
+}
+
+async function scheduleMutationFailureKeepsDraftForRetry() {
+  const save = deferred();
+  const harness = await renderManagedSchedule(cronJob(), [save]);
+
+  harness.select("Update cadence").props.onChange({ target: { value: "every 180m" } });
+  harness.rerender();
+  harness.button("Save").props.onClick();
+  save.reject(new Error('400: {"detail":"Invalid schedule"}'));
+  await drainPromises();
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Invalid schedule/);
+  assert.equal(harness.select("Update cadence").props.value, "every 180m");
+  assert.equal(harness.button("Save").props.disabled, false);
+}
+
+async function missingManagedScheduleCannotMutateCron() {
+  const harness = await renderManagedSchedule(null, []);
+
+  assert.match(harness.textContent(), /Create or repair it in Hermes Cron/);
+  assert.equal(harness.button("Scheduled").props.disabled, true);
+  assert.equal(harness.button("Manual only").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
+}
+
 async function stalePollsCannotOverwriteUpdateResult() {
   const staleStatus = deferred();
   const staleUpdates = deferred();
@@ -827,6 +1123,16 @@ async function main() {
   await pollsHealthAndUpdatesAtDifferentIntervals();
   await successfulStatusPollClearsTransientError();
   await relayLocationDistinguishesTailscaleFromLocal();
+  await managedScheduleCadenceUsesHermesCronUpdate();
+  await customCronCadenceStartsAsCurrentAndClean();
+  await combinedScheduleSaveUsesReturnedJobForModeMutation();
+  await partialScheduleSaveRetainsOnlyFailedSetting();
+  await managedScheduleModePausesAndResumesExistingJob();
+  await schedulePollingPreservesUnsavedSelection();
+  await modeDraftDoesNotOverwriteExternalCadenceChange();
+  await revertedScheduleDraftResynchronizesOnExternalPoll();
+  await scheduleMutationFailureKeepsDraftForRetry();
+  await missingManagedScheduleCannotMutateCron();
   await stalePollsCannotOverwriteUpdateResult();
   await manualRefreshLoadsBothResources();
   await stalePollsCannotOverwriteRefreshResult();

@@ -3,7 +3,7 @@
   "label": "Buzz",
   "description": "Manage core Buzz endpoint and access settings, inspect relay health, and reconcile images safely.",
   "icon": "RadioTower",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "tab": {
     "path": "/buzz",
     "position": "after:achievements"
