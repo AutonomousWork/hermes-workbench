@@ -122,6 +122,12 @@ reconciler and lock:
 Reinstalling refreshes the wrapper while preserving an operator-edited cadence,
 paused state, and delivery setting.
 
+The Buzz dashboard can switch the existing job between **Scheduled** and
+**Manual only** without deleting it. Scheduled mode offers conservative cadence
+presets from hourly through weekly and updates only the job's schedule through
+Hermes's authenticated Cron API. Manual-only mode pauses automatic checks;
+**Update Buzz** remains available for an operator-triggered check.
+
 ## Advanced maintenance and adoption
 
 Secrets, database, Redis, S3, network, image, port, migration, relay-identity,
