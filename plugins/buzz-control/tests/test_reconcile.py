@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +146,31 @@ class ReconcilerTests(unittest.TestCase):
             settings.desired,
             Path("/tmp/buzz-reconcile-xdg/buzz/prod.env"),
         )
+
+    def test_http_health_closes_plain_http_connection(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner, _store, paths, _saved, _token, _call_log = self.make_runner(
+                Path(td), 3300
+            )
+            del runner._http_healthy
+            connection = Mock()
+            response = Mock(status=200)
+            response.read.return_value = b"ok"
+            connection.getresponse.return_value = response
+
+            with patch.object(
+                self.reconcile.http.client,
+                "HTTPConnection",
+                return_value=connection,
+            ) as http_connection:
+                healthy = runner._http_healthy(paths.applied)
+
+            http_connection.assert_called_once_with(
+                "127.0.0.1", 3300, timeout=3.0
+            )
+            connection.request.assert_called_once_with("GET", "/_liveness")
+            connection.close.assert_called_once_with()
+            self.assertTrue(healthy)
 
     def test_apply_uses_desired_then_promotes_only_after_full_health(self):
         with tempfile.TemporaryDirectory() as td:

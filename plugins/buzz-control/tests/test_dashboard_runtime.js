@@ -75,6 +75,7 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
   cronRequests = cronRequests || [];
   configRequests = configRequests || [];
   const window = {
+    URL: URL,
     __HERMES_PLUGINS__: {
       register: function (_name, registeredComponent) {
         component = registeredComponent;
@@ -256,6 +257,61 @@ async function successfulStatusPollClearsTransientError() {
 
   assert.equal(harness.state[0].source, "recovered poll");
   assert.equal(harness.state[4], null);
+}
+
+async function renderRelayLocation(publicUrl) {
+  const status = deferred();
+  const updates = deferred();
+  const cron = deferred();
+  const harness = createHarness([status], [updates], [], [cron]);
+
+  harness.runEffects();
+  status.resolve({
+    healthy: true,
+    relay: {
+      public_url: publicUrl,
+      local_url: "http://127.0.0.1:3300",
+      scope: "Local only",
+    },
+  });
+  updates.resolve({ update_available: false, state: {}, errors: [] });
+  cron.resolve([]);
+  await drainPromises();
+  harness.rerender();
+  return harness;
+}
+
+async function relayLocationDistinguishesTailscaleFromLocal() {
+  const tailscale = await renderRelayLocation(
+    "wss://maximus.ocelot-dory.ts.net:10443",
+  );
+
+  assert.ok(tailscale.nodeWithClassName(
+    "buzz-control__relay-primary buzz-control__relay-primary--tailscale",
+  ));
+  assert.match(tailscale.textContent(), /Tailscale configured/);
+  assert.doesNotMatch(tailscale.textContent(), /Local only/);
+
+  const local = await renderRelayLocation("ws://127.0.0.1:3300");
+
+  assert.ok(local.nodeWithClassName(
+    "buzz-control__relay-primary buzz-control__relay-primary--local",
+  ));
+  assert.match(local.textContent(), /Local only/);
+  assert.doesNotMatch(local.textContent(), /Tailscale configured/);
+
+  const lookalike = await renderRelayLocation("wss://node.ts.net.evil.test");
+  assert.ok(lookalike.nodeWithClassName(
+    "buzz-control__relay-primary buzz-control__relay-primary--local",
+  ));
+  assert.match(lookalike.textContent(), /Local only/);
+
+  const malformed = await renderRelayLocation("not a URL");
+  assert.ok(malformed.nodeWithClassName(
+    "buzz-control__relay-primary buzz-control__relay-primary--local",
+  ));
+  assert.match(malformed.textContent(), /Local only/);
+  assert.doesNotMatch(malformed.textContent(), /Tailscale configured/);
 }
 
 async function stalePollsCannotOverwriteUpdateResult() {
@@ -770,6 +826,7 @@ async function dirtyBackRequiresConfirmation() {
 async function main() {
   await pollsHealthAndUpdatesAtDifferentIntervals();
   await successfulStatusPollClearsTransientError();
+  await relayLocationDistinguishesTailscaleFromLocal();
   await stalePollsCannotOverwriteUpdateResult();
   await manualRefreshLoadsBothResources();
   await stalePollsCannotOverwriteRefreshResult();

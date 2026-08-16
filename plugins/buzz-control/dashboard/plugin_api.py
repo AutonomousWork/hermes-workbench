@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, NamedTuple
@@ -421,8 +422,8 @@ def _probe_health(
 ) -> dict[str, Any]:
     try:
         port = _runtime_local_port(desired_config=desired_config)
-        with http.client.HTTPConnection(
-            LOCAL_HOST, port, timeout=timeout
+        with closing(
+            http.client.HTTPConnection(LOCAL_HOST, port, timeout=timeout)
         ) as connection:
             connection.request("GET", HEALTH_PATH)
             response = connection.getresponse()

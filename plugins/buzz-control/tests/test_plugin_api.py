@@ -10,7 +10,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -274,9 +274,8 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(status["error"], "Docker is unavailable")
 
     def test_health_probe_uses_the_buzz_liveness_endpoint(self):
-        connection = MagicMock()
-        connection.__enter__.return_value = connection
-        response = MagicMock(status=200)
+        connection = Mock()
+        response = Mock(status=200)
         response.read.return_value = b"ok"
         connection.getresponse.return_value = response
 
@@ -293,6 +292,7 @@ class PluginApiTests(unittest.TestCase):
 
         http_connection.assert_called_once_with("127.0.0.1", 3300, timeout=3.0)
         connection.request.assert_called_once_with("GET", "/_liveness")
+        connection.close.assert_called_once_with()
         self.assertTrue(result["healthy"])
         self.assertEqual(result["response"], "ok")
 
