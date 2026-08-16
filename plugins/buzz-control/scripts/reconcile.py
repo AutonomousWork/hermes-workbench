@@ -11,7 +11,7 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import closing
+from contextlib import closing, suppress
 from pathlib import Path
 from typing import NamedTuple
 
@@ -360,6 +360,45 @@ class Reconciler:
     def _journal_blocks(self, view: object) -> bool:
         return view.journal.get("phase") in CONFIG_MODULE.BLOCKING_JOURNAL_PHASES
 
+    def _promote_matching_runtime_locked(
+        self,
+        view: object,
+        *,
+        action: str,
+    ) -> object:
+        recovery = action == "recover_adopt"
+        phase = "recovering" if recovery else "adopting"
+        outcome = "recovered" if recovery else "applied"
+        snapshot = self.store.operation_snapshot_locked(view.revision)
+        operation = self.paths.operation
+        self._compose(operation, self.settings.image, "config", "--quiet")
+        self._http_port(operation)
+        desired_hash = self._service_config_hash(operation, self.settings.image)
+        container_id = self._container_id(operation, self.settings.image)
+        if not container_id:
+            raise ReconcileFailure("runtime_unverified", 78)
+        image = self._container_image(container_id)
+        if (
+            self._container_config_hash(container_id) != desired_hash
+            or self._container_health(container_id) != "healthy"
+            or not self._http_healthy(operation)
+        ):
+            raise ReconcileFailure("runtime_unverified", 78)
+        self._write_phase(
+            phase,
+            action,
+            view,
+            started_at=CONFIG_MODULE._utc_now(),
+            runtime_generation=image,
+        )
+        return self.store.promote_operation_locked(
+            snapshot,
+            phase="applied",
+            action=action,
+            runtime_generation=image,
+            outcome=outcome,
+        )
+
     def image(self, trigger: str) -> int:
         if trigger not in {"manual", "scheduled"}:
             raise ReconcileFailure("invalid_invocation", 2)
@@ -369,13 +408,23 @@ class Reconciler:
                 if self._journal_blocks(view):
                     raise ReconcileFailure("recovery_required", 78)
                 if view.baseline_state == "baseline_missing":
-                    selected = self.paths.desired
-                    block_recreate = "true"
-                else:
+                    with suppress(ReconcileFailure):
+                        view = self._promote_matching_runtime_locked(
+                            view,
+                            action="auto_adopt",
+                        )
+                if view.baseline_state == "established":
                     selected = self.paths.applied
                     block_recreate = "false"
+                else:
+                    selected = self.paths.desired
+                    block_recreate = "true"
+                child_timeout = max(1, int(self._remaining()))
                 environment = os.environ.copy()
                 environment["BUZZ_CONTROL_RECONCILER_CHILD"] = "1"
+                environment["BUZZ_CONTROL_EXECUTION_TIMEOUT_SECONDS"] = str(
+                    child_timeout
+                )
                 try:
                     result = subprocess.run(
                         [
@@ -388,7 +437,7 @@ class Reconciler:
                         check=False,
                         # The inner updater owns the operation deadline and still
                         # needs a bounded moment to persist its safe timeout receipt.
-                        timeout=self._remaining() + 3.0,
+                        timeout=child_timeout + 3.0,
                         env=environment,
                     )
                 except subprocess.TimeoutExpired as exc:
@@ -579,36 +628,9 @@ class Reconciler:
                 and phase not in CONFIG_MODULE.RECOVERY_ADOPTION_PHASES
             ) or (not recovery and self._journal_blocks(view)):
                 raise ReconcileFailure("policy_changed", 78)
-            snapshot = self.store.operation_snapshot_locked(revision)
-            operation = self.paths.operation
-            self._compose(operation, self.settings.image, "config", "--quiet")
-            self._http_port(operation)
-            desired_hash = self._service_config_hash(
-                operation, self.settings.image
-            )
-            container_id = self._container_id(operation, self.settings.image)
-            if not container_id:
-                raise ReconcileFailure("runtime_unverified", 78)
-            image = self._container_image(container_id)
-            if (
-                self._container_config_hash(container_id) != desired_hash
-                or self._container_health(container_id) != "healthy"
-                or not self._http_healthy(operation)
-            ):
-                raise ReconcileFailure("runtime_unverified", 78)
-            self._write_phase(
-                "recovering" if recovery else "adopting",
-                action,
+            self._promote_matching_runtime_locked(
                 view,
-                started_at=CONFIG_MODULE._utc_now(),
-                runtime_generation=image,
-            )
-            self.store.promote_operation_locked(
-                snapshot,
-                phase="applied",
                 action=action,
-                runtime_generation=image,
-                outcome="recovered" if recovery else "applied",
             )
             return "recovered" if recovery else "adopted"
 
