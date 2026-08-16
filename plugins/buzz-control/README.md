@@ -61,8 +61,10 @@ an unverified production file safe. The next manual or scheduled image update
 automatically establishes the baseline only when the running relay exactly
 matches `prod.env` and passes Docker and HTTP health checks, so ordinary image
 updates do not require the configuration UI. A mismatched or unhealthy runtime
-remains blocked until the operator resolves it and explicitly adopts the current
-healthy configuration.
+remains blocked until automatic verification completes successfully OR the
+operator explicitly adopts the current healthy configuration. Subsequent manual
+or scheduled image updates retry automatic baseline establishment when the
+baseline is still missing.
 
 ## Managed settings
 
