@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -32,14 +34,35 @@ def load_plugin_api(environment: dict[str, str] | None = None):
         def post(self, *_args, **_kwargs):
             return lambda function: function
 
+        def put(self, *_args, **_kwargs):
+            return lambda function: function
+
     class HTTPException(Exception):
         def __init__(self, status_code: int, detail: str):
             super().__init__(detail)
             self.status_code = status_code
             self.detail = detail
 
+    class Request:
+        pass
+
+    class Response:
+        def __init__(
+            self,
+            content=b"",
+            status_code=200,
+            headers=None,
+            media_type=None,
+        ):
+            self.body = content.encode() if isinstance(content, str) else content
+            self.status_code = status_code
+            self.headers = dict(headers or {})
+            self.media_type = media_type
+
     fastapi.APIRouter = APIRouter
     fastapi.HTTPException = HTTPException
+    fastapi.Request = Request
+    fastapi.Response = Response
     clean_environment = {
         key: value
         for key, value in os.environ.items()
@@ -53,6 +76,52 @@ def load_plugin_api(environment: dict[str, str] | None = None):
     ):
         spec.loader.exec_module(module)
     return module
+
+
+class Headers:
+    def __init__(self, entries: list[tuple[str, str]]):
+        self.entries = [(key.lower(), value) for key, value in entries]
+
+    def get(self, key: str, default=None):
+        values = self.getlist(key)
+        return values[-1] if values else default
+
+    def getlist(self, key: str):
+        lowered = key.lower()
+        return [value for name, value in self.entries if name == lowered]
+
+
+class FakeRequest:
+    def __init__(
+        self,
+        body: bytes = b"",
+        *,
+        origin: str | None = "http://127.0.0.1:9119",
+        content_type: str = "application/json",
+        extra_headers: list[tuple[str, str]] | None = None,
+        chunks: list[bytes] | None = None,
+    ):
+        headers = [("host", "127.0.0.1:9119")]
+        if origin is not None:
+            headers.append(("origin", origin))
+        if content_type:
+            headers.append(("content-type", content_type))
+        headers.append(("content-length", str(len(body))))
+        headers.append(("sec-fetch-site", "same-origin"))
+        headers.extend(extra_headers or [])
+        self.headers = Headers(headers)
+        self.url = types.SimpleNamespace(scheme="http")
+        self.state = types.SimpleNamespace(session=types.SimpleNamespace(subject="operator"))
+        self.app = types.SimpleNamespace(state=types.SimpleNamespace(auth_required=True))
+        self._chunks = chunks if chunks is not None else [body]
+
+    async def stream(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+def response_json(response) -> dict:
+    return json.loads(response.body.decode("utf-8"))
 
 
 def completed(
@@ -104,11 +173,14 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(self.plugin.COMPOSE_PROJECT, "buzz-prod")
         self.assertEqual(self.plugin.COMPOSE_SERVICE, "relay")
         self.assertEqual(self.plugin.LOCAL_PORT, 3300)
+        self.assertIsNone(self.plugin.LOCAL_PORT_OVERRIDE)
+        self.assertIsNone(self.plugin.LOCAL_RELAY_URL_OVERRIDE)
         self.assertEqual(self.plugin.HEALTH_PATH, "/_liveness")
         self.assertEqual(
-            self.plugin.PUBLIC_RELAY_URL,
+            self.plugin.DEFAULT_PUBLIC_RELAY_URL,
             "ws://127.0.0.1:3300",
         )
+        self.assertIsNone(self.plugin.PUBLIC_RELAY_URL_OVERRIDE)
         self.assertEqual(self.plugin.NETWORK_SCOPE, "Local only")
         self.assertEqual(self.plugin.RELAY_IMAGE, "ghcr.io/block/buzz:main")
         self.assertEqual(self.plugin.DEPLOY_DIR, PLUGIN_ROOT / "deploy")
@@ -128,8 +200,21 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(plugin.COMPOSE_PROJECT, "buzz-stage")
         self.assertEqual(plugin.COMPOSE_SERVICE, "buzz-relay")
         self.assertEqual(plugin.LOCAL_PORT, 4400)
+        self.assertEqual(plugin.LOCAL_PORT_OVERRIDE, 4400)
+        self.assertEqual(plugin.LOCAL_RELAY_URL_OVERRIDE, "http://127.0.0.1:4400")
         self.assertEqual(plugin.DEPLOY_DIR, Path("/tmp/buzz-compose"))
-        self.assertEqual(plugin.PUBLIC_RELAY_URL, "wss://buzz.example.test")
+        self.assertEqual(
+            plugin.PUBLIC_RELAY_URL_OVERRIDE,
+            "wss://buzz.example.test",
+        )
+
+    def test_xdg_config_home_selects_the_same_production_file(self):
+        plugin = load_plugin_api({"XDG_CONFIG_HOME": "/tmp/buzz-xdg"})
+
+        self.assertEqual(
+            plugin.CONFIG_ENV_FILE,
+            Path("/tmp/buzz-xdg/buzz/prod.env"),
+        )
 
     def test_runtime_settings_reject_browser_unsafe_values(self):
         with self.assertRaisesRegex(ValueError, "may contain only"):
@@ -140,6 +225,10 @@ class PluginApiTests(unittest.TestCase):
             load_plugin_api({"BUZZ_CONTROL_LOCAL_PORT": "70000"})
         with self.assertRaisesRegex(ValueError, "must be an absolute path"):
             load_plugin_api({"BUZZ_CONTROL_DEPLOY_DIR": "relative/path"})
+        with self.assertRaisesRegex(ValueError, "credential-free"):
+            load_plugin_api(
+                {"BUZZ_CONTROL_RELAY_URL": "wss://secret@example.test"}
+            )
 
     def test_inspect_container_parses_only_safe_status_fields(self):
         fields = self.plugin._FIELD_SEPARATOR.join(
@@ -186,11 +275,16 @@ class PluginApiTests(unittest.TestCase):
 
     def test_health_probe_uses_the_buzz_liveness_endpoint(self):
         connection = MagicMock()
+        connection.__enter__.return_value = connection
         response = MagicMock(status=200)
         response.read.return_value = b"ok"
         connection.getresponse.return_value = response
 
         with patch.object(
+            self.plugin.CONFIG_STORE,
+            "runtime_value",
+            return_value="3300",
+        ), patch.object(
             self.plugin.http.client,
             "HTTPConnection",
             return_value=connection,
@@ -201,6 +295,28 @@ class PluginApiTests(unittest.TestCase):
         connection.request.assert_called_once_with("GET", "/_liveness")
         self.assertTrue(result["healthy"])
         self.assertEqual(result["response"], "ok")
+
+    def test_health_probe_uses_the_applied_snapshot_port(self):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        response = MagicMock(status=200)
+        response.read.return_value = b"ok"
+        connection.getresponse.return_value = response
+
+        with patch.object(
+            self.plugin.CONFIG_STORE,
+            "runtime_value",
+            return_value="4400",
+        ) as runtime_value, patch.object(
+            self.plugin.http.client,
+            "HTTPConnection",
+            return_value=connection,
+        ) as http_connection:
+            result = self.plugin._probe_health()
+
+        runtime_value.assert_called_once_with("BUZZ_HTTP_PORT", desired=False)
+        http_connection.assert_called_once_with("127.0.0.1", 4400, timeout=3.0)
+        self.assertTrue(result["healthy"])
 
     def test_get_status_requires_container_and_http_health(self):
         container = {
@@ -216,14 +332,83 @@ class PluginApiTests(unittest.TestCase):
             "response": "ok",
             "error": None,
         }
+        def runtime_value(name, *, desired=False):
+            self.assertFalse(desired)
+            return {
+                "BUZZ_HTTP_PORT": "4400",
+                "RELAY_URL": "wss://relay.example.test",
+            }[name]
+
         with patch.object(
             self.plugin, "_container_status", return_value=container
-        ), patch.object(self.plugin, "_probe_health", return_value=probe):
+        ), patch.object(self.plugin, "_probe_health", return_value=probe), patch.object(
+            self.plugin.CONFIG_STORE,
+            "runtime_value",
+            side_effect=runtime_value,
+        ):
             status = self.plugin.get_status()
 
         self.assertTrue(status["healthy"])
-        self.assertEqual(status["relay"]["public_url"], self.plugin.PUBLIC_RELAY_URL)
+        self.assertEqual(
+            status["relay"]["public_url"],
+            "wss://relay.example.test",
+        )
+        self.assertFalse(status["relay"]["public_url_redacted"])
+        self.assertEqual(status["relay"]["local_url"], "http://127.0.0.1:4400")
         self.assertEqual(status["deployment"]["project"], "buzz-prod")
+
+    def test_status_uses_valid_applied_values_when_desired_is_invalid(self):
+        desired = b"export BUZZ_HTTP_PORT=secret-canary\n"
+        applied = (
+            b"BUZZ_HTTP_PORT=4400\n"
+            b"RELAY_URL=wss://relay.example.test\n"
+        )
+        container = {
+            "running": True,
+            "health": "healthy",
+            "revision": "abc",
+            "error": None,
+        }
+        probe = {
+            "reachable": True,
+            "healthy": True,
+            "status_code": 200,
+            "response": "ok",
+            "error": None,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), desired, applied=applied
+            )
+            with patch.object(
+                self.plugin, "CONFIG_STORE", store
+            ), patch.object(
+                self.plugin, "_container_status", return_value=container
+            ), patch.object(
+                self.plugin, "_probe_health", return_value=probe
+            ):
+                status = self.plugin.get_status()
+
+        self.assertTrue(status["healthy"])
+        self.assertEqual(status["relay"]["local_url"], "http://127.0.0.1:4400")
+        self.assertEqual(
+            status["relay"]["public_url"], "wss://relay.example.test"
+        )
+
+    def test_public_relay_url_never_discloses_embedded_credentials(self):
+        with patch.object(
+            self.plugin.CONFIG_STORE,
+            "runtime_value",
+            return_value=(
+                "wss://operator:secret-canary@relay.example.test/events"
+                "?token=second-canary#third-canary"
+            ),
+        ):
+            value, redacted = self.plugin._runtime_public_url_details()
+
+        self.assertEqual(value, "wss://relay.example.test/events")
+        self.assertTrue(redacted)
+        self.assertNotIn("canary", value)
 
     def test_update_state_parser_accepts_only_the_versioned_allow_list(self):
         with tempfile.TemporaryDirectory() as td:
@@ -422,6 +607,535 @@ class PluginApiTests(unittest.TestCase):
             self.plugin.update_route()
 
         self.assertEqual(raised.exception.status_code, 409)
+
+    def make_config_store(
+        self,
+        root: Path,
+        desired: bytes,
+        *,
+        applied: bytes | None = None,
+    ):
+        config_dir = root / "config"
+        state_dir = root / "state"
+        config_dir.mkdir(mode=0o700)
+        state_dir.mkdir(mode=0o700)
+        desired_path = config_dir / "prod.env"
+        desired_path.write_bytes(desired)
+        desired_path.chmod(0o600)
+        paths = self.plugin.CONFIG_MODULE.ConfigPaths.for_desired(
+            desired_path, state_dir
+        )
+        if applied is not None:
+            paths.applied.write_bytes(applied)
+            paths.applied.chmod(0o600)
+        return self.plugin.CONFIG_MODULE.ConfigStore(paths), paths
+
+    def test_config_get_is_redacted_and_never_cached(self):
+        canary = "secret-canary-with-distinct-length"
+        raw = (
+            "BUZZ_DOMAIN=example.test\n"
+            f"POSTGRES_PASSWORD={canary}\n"
+            "UNKNOWN_LOCAL=unknown-canary\n"
+        ).encode()
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw, applied=raw)
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                response = asyncio.run(
+                    self.plugin.config_route(FakeRequest(origin=None))
+                )
+
+        serialized = response.body.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertNotIn(canary, serialized)
+        self.assertNotIn("unknown-canary", serialized)
+        fields = {field["name"]: field for field in response_json(response)["fields"]}
+        self.assertEqual(fields["BUZZ_DOMAIN"]["value"], "example.test")
+        self.assertNotIn("POSTGRES_PASSWORD", fields)
+        self.assertNotIn("UNKNOWN_LOCAL", fields)
+
+    def test_config_save_rejects_unmanaged_assignments(self):
+        raw = b"BUZZ_DOMAIN=example.test\nPOSTGRES_PASSWORD=old-secret\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw, applied=raw)
+            revision = store.describe().revision
+            body = json.dumps(
+                {
+                    "base_revision": revision,
+                    "replacements": {"POSTGRES_PASSWORD": "new-secret-canary"},
+                }
+            ).encode()
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                response = asyncio.run(
+                    self.plugin.config_save_route(FakeRequest(body))
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response_json(response)["error"]["code"], "field_not_editable"
+        )
+        self.assertNotIn("new-secret-canary", response.body.decode())
+
+    def test_config_save_requires_exact_same_origin_json(self):
+        raw = b"BUZZ_DOMAIN=example.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw, applied=raw)
+            revision = store.describe().revision
+            body = json.dumps(
+                {
+                    "base_revision": revision,
+                    "replacements": {"BUZZ_DOMAIN": "next.test"},
+                }
+            ).encode()
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                missing = asyncio.run(
+                    self.plugin.config_save_route(FakeRequest(body, origin=None))
+                )
+                cross_site = asyncio.run(
+                    self.plugin.config_save_route(
+                        FakeRequest(body, origin="https://evil.example")
+                    )
+                )
+                wrong_type = asyncio.run(
+                    self.plugin.config_save_route(
+                        FakeRequest(body, content_type="text/plain")
+                    )
+                )
+                success = asyncio.run(
+                    self.plugin.config_save_route(FakeRequest(body))
+                )
+
+        self.assertEqual(missing.status_code, 403)
+        self.assertEqual(cross_site.status_code, 403)
+        self.assertEqual(wrong_type.status_code, 415)
+        self.assertEqual(success.status_code, 200)
+        self.assertTrue(response_json(success)["wrote"])
+
+    def test_config_parser_errors_never_echo_canary_input(self):
+        raw = b"BUZZ_DOMAIN=example.test\n"
+        canary = b"secret-canary-malformed"
+        cases = (
+            (b'{"base_revision": "' + canary, 400),
+            (json.dumps({"unknown": canary.decode()}).encode(), 400),
+            (b"x" * (self.plugin.MAX_CONFIG_REQUEST_BYTES + 1), 413),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw, applied=raw)
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                for body, expected_status in cases:
+                    with self.subTest(status=expected_status):
+                        response = asyncio.run(
+                            self.plugin.config_save_route(FakeRequest(body))
+                        )
+                        serialized = response.body.decode()
+                        self.assertEqual(response.status_code, expected_status)
+                        self.assertNotIn(canary.decode(), serialized)
+                        payload = response_json(response)
+                        self.assertRegex(payload["error"]["correlation_id"], r"^[A-Za-z0-9_-]+$")
+
+    def test_streamed_body_cap_does_not_trust_declared_length(self):
+        raw = b"BUZZ_DOMAIN=example.test\n"
+        canary = b"secret-canary-chunked"
+        chunks = [b"{" + canary, b"x" * self.plugin.MAX_CONFIG_REQUEST_BYTES]
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw, applied=raw)
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                request = FakeRequest(b"{}", chunks=chunks)
+                response = asyncio.run(self.plugin.config_save_route(request))
+
+        self.assertEqual(response.status_code, 413)
+        self.assertNotIn(canary.decode(), response.body.decode())
+
+    def test_bearer_and_ambiguous_origin_mutations_fail_closed(self):
+        body = b"{}"
+        ambiguous = FakeRequest(
+            body,
+            extra_headers=[("origin", "http://127.0.0.1:9119")],
+        )
+        bearer = FakeRequest(
+            body,
+            extra_headers=[("authorization", "Bearer secret-canary")],
+        )
+
+        ambiguous_response = asyncio.run(
+            self.plugin.config_save_route(ambiguous)
+        )
+        bearer_response = asyncio.run(self.plugin.config_save_route(bearer))
+
+        self.assertEqual(ambiguous_response.status_code, 403)
+        self.assertEqual(bearer_response.status_code, 403)
+        self.assertNotIn("secret-canary", bearer_response.body.decode())
+
+    def test_manual_only_pending_change_cannot_prepare_apply(self):
+        desired = b"POSTGRES_PASSWORD=new-secret-canary\n"
+        applied = b"POSTGRES_PASSWORD=old-secret\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), desired, applied=applied
+            )
+            current = store.describe()
+            body = json.dumps(
+                {"action": "apply", "revision": current.revision}
+            ).encode()
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(body))
+                )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response_json(response)["error"]["code"],
+            "manual_maintenance_required",
+        )
+        self.assertNotIn("new-secret-canary", response.body.decode())
+
+    def test_config_contract_hides_advanced_changed_key_names(self):
+        desired = (
+            b"BUZZ_DOMAIN=example.test\n"
+            b"POSTGRES_PASSWORD=secret-canary\n"
+            b"UNLISTED_RUNTIME_FLAG=enabled\n"
+        )
+        applied = (
+            b"BUZZ_DOMAIN=example.test\n"
+            b"POSTGRES_PASSWORD=old-secret\n"
+            b"UNLISTED_RUNTIME_FLAG=disabled\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), desired, applied=applied
+            )
+            view = store.describe()
+            store.write_journal(
+                {
+                    "phase": "saved",
+                    "action": "save",
+                    "revision": view.revision,
+                    "changed_keys": [
+                        "POSTGRES_PASSWORD",
+                        "UNLISTED_RUNTIME_FLAG",
+                    ],
+                    "impact_classes": ["unknown_manual_only"],
+                    "outcome": "pending",
+                }
+            )
+            with patch.object(self.plugin, "CONFIG_STORE", store), patch.object(
+                self.plugin,
+                "get_status",
+                return_value={"healthy": True},
+            ):
+                config_payload = self.plugin.get_config()
+                intent_payload = self.plugin.prepare_config_intent(
+                    {
+                        "action": "adopt",
+                        "revision": view.revision,
+                        "attestation": "external_maintenance_complete",
+                    },
+                    FakeRequest(),
+                )
+
+        serialized = json.dumps(
+            {"config": config_payload, "intent": intent_payload}
+        )
+        self.assertEqual(config_payload["changed_keys"], [])
+        self.assertEqual(config_payload["operation"]["changed_keys"], [])
+        self.assertEqual(intent_payload["review"]["changed_keys"], [])
+        self.assertNotIn("POSTGRES_PASSWORD", serialized)
+        self.assertNotIn("UNLISTED_RUNTIME_FLAG", serialized)
+        self.assertNotIn("secret-canary", serialized)
+
+    def test_apply_route_consumes_the_bound_intent_once(self):
+        initial = b"BUZZ_DOMAIN=first.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), initial, applied=initial
+            )
+            saved = store.save(
+                store.describe().revision, {"BUZZ_DOMAIN": "second.test"}
+            )
+            intent_body = json.dumps(
+                {"action": "apply", "revision": saved.revision}
+            ).encode()
+            result_payload = self.plugin._config_payload(store.describe())
+            result_payload["reconcile_result"] = "applied"
+            with patch.object(self.plugin, "CONFIG_STORE", store), patch.object(
+                self.plugin,
+                "_container_status",
+                return_value={"running": True},
+            ), patch.object(
+                self.plugin,
+                "_run_config_reconciler",
+                return_value=result_payload,
+            ) as reconcile:
+                intent_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                token = response_json(intent_response)["intent"]
+                apply_body = json.dumps(
+                    {
+                        "action": "apply",
+                        "intent": token,
+                        "revision": saved.revision,
+                    }
+                ).encode()
+                first = asyncio.run(
+                    self.plugin.config_apply_route(FakeRequest(apply_body))
+                )
+                replay = asyncio.run(
+                    self.plugin.config_apply_route(FakeRequest(apply_body))
+                )
+
+        self.assertEqual(first.status_code, 200)
+        reconcile.assert_called_once_with("apply", saved.revision, token)
+        self.assertEqual(replay.status_code, 409)
+        self.assertEqual(response_json(replay)["error"]["code"], "invalid_intent")
+
+    def test_confirmation_is_bound_to_action_principal_and_expiry(self):
+        initial = b"BUZZ_DOMAIN=first.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), initial, applied=initial
+            )
+            saved = store.save(
+                store.describe().revision, {"BUZZ_DOMAIN": "second.test"}
+            )
+            intent_body = json.dumps(
+                {"action": "apply", "revision": saved.revision}
+            ).encode()
+            with patch.object(self.plugin, "CONFIG_STORE", store), patch.object(
+                self.plugin,
+                "_container_status",
+                return_value={"running": True},
+            ):
+                action_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                action_token = response_json(action_response)["intent"]
+                wrong_action = asyncio.run(
+                    self.plugin.config_restore_route(
+                        FakeRequest(
+                            json.dumps(
+                                {
+                                    "intent": action_token,
+                                    "revision": saved.revision,
+                                }
+                            ).encode()
+                        )
+                    )
+                )
+
+                principal_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                principal_token = response_json(principal_response)["intent"]
+                principal_request = FakeRequest(
+                    json.dumps(
+                        {
+                            "action": "apply",
+                            "intent": principal_token,
+                            "revision": saved.revision,
+                        }
+                    ).encode()
+                )
+                principal_request.state.session.subject = "different-operator"
+                wrong_principal = asyncio.run(
+                    self.plugin.config_apply_route(principal_request)
+                )
+
+                expiry_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                expiry_token = response_json(expiry_response)["intent"]
+                digest = self.plugin.hashlib.sha256(
+                    expiry_token.encode("ascii")
+                ).hexdigest()
+                stored = self.plugin._INTENTS[digest]
+                self.plugin._INTENTS[digest] = stored._replace(expires_at=0)
+                expired = asyncio.run(
+                    self.plugin.config_apply_route(
+                        FakeRequest(
+                            json.dumps(
+                                {
+                                    "action": "apply",
+                                    "intent": expiry_token,
+                                    "revision": saved.revision,
+                                }
+                            ).encode()
+                        )
+                    )
+                )
+
+        for response in (wrong_action, wrong_principal, expired):
+            with self.subTest(response=response):
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(
+                    response_json(response)["error"]["code"],
+                    "invalid_intent",
+                )
+
+    def test_restore_intent_is_one_use_and_bound_to_revision(self):
+        initial = b"BUZZ_DOMAIN=first.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), initial, applied=initial
+            )
+            saved = store.save(
+                store.describe().revision, {"BUZZ_DOMAIN": "second.test"}
+            )
+            intent_body = json.dumps(
+                {"action": "restore", "revision": saved.revision}
+            ).encode()
+            with patch.object(self.plugin, "CONFIG_STORE", store):
+                intent_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                token = response_json(intent_response)["intent"]
+                restore_body = json.dumps(
+                    {
+                        "intent": token,
+                        "revision": saved.revision,
+                    }
+                ).encode()
+                first = asyncio.run(
+                    self.plugin.config_restore_route(FakeRequest(restore_body))
+                )
+                replay = asyncio.run(
+                    self.plugin.config_restore_route(FakeRequest(restore_body))
+                )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertFalse(response_json(first)["pending"])
+        self.assertEqual(replay.status_code, 409)
+        self.assertEqual(response_json(replay)["error"]["code"], "invalid_intent")
+
+    def test_adopt_requires_attestation_and_healthy_runtime(self):
+        raw = b"BUZZ_DOMAIN=example.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw)
+            revision = store.describe().revision
+            without_attestation = json.dumps(
+                {"action": "adopt", "revision": revision}
+            ).encode()
+            with_attestation = json.dumps(
+                {
+                    "action": "adopt",
+                    "revision": revision,
+                    "attestation": "external_maintenance_complete",
+                }
+            ).encode()
+            with patch.object(self.plugin, "CONFIG_STORE", store), patch.object(
+                self.plugin,
+                "get_status",
+                return_value={"healthy": False, "container": {"running": True}},
+            ):
+                missing = asyncio.run(
+                    self.plugin.config_intent_route(
+                        FakeRequest(without_attestation)
+                    )
+                )
+                unhealthy = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(with_attestation))
+                )
+
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(unhealthy.status_code, 409)
+        self.assertEqual(response_json(unhealthy)["error"]["code"], "runtime_unhealthy")
+
+    def test_adopt_route_uses_desired_health_and_bound_reconciler_intent(self):
+        raw = b"BUZZ_HTTP_PORT=4400\nBUZZ_DOMAIN=example.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(Path(td), raw)
+            revision = store.describe().revision
+            intent_body = json.dumps(
+                {
+                    "action": "adopt",
+                    "revision": revision,
+                    "attestation": "external_maintenance_complete",
+                }
+            ).encode()
+            result_payload = self.plugin._config_payload(store.describe())
+            result_payload["reconcile_result"] = "adopted"
+            with patch.object(self.plugin, "CONFIG_STORE", store), patch.object(
+                self.plugin,
+                "get_status",
+                return_value={"healthy": True, "container": {"running": True}},
+            ) as status, patch.object(
+                self.plugin,
+                "_run_config_reconciler",
+                return_value=result_payload,
+            ) as reconcile:
+                intent_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                token = response_json(intent_response)["intent"]
+                adopt_body = json.dumps(
+                    {"intent": token, "revision": revision}
+                ).encode()
+                adopted = asyncio.run(
+                    self.plugin.config_adopt_route(FakeRequest(adopt_body))
+                )
+
+        self.assertEqual(adopted.status_code, 200)
+        status.assert_called_once_with(desired_config=True)
+        reconcile.assert_called_once_with("adopt", revision, token)
+
+    def test_degraded_adopt_uses_one_use_recovery_reconciler_intent(self):
+        initial = b"BUZZ_HTTP_PORT=4400\nBUZZ_DOMAIN=first.test\n"
+        with tempfile.TemporaryDirectory() as td:
+            store, _paths = self.make_config_store(
+                Path(td), initial, applied=initial
+            )
+            saved = store.save(
+                store.describe().revision, {"BUZZ_DOMAIN": "second.test"}
+            )
+            store.write_journal(
+                {
+                    "phase": "degraded",
+                    "action": "apply",
+                    "revision": saved.revision,
+                    "completed_at": "2026-08-15T12:00:00Z",
+                    "outcome": "rollback_unverified",
+                }
+            )
+            intent_body = json.dumps(
+                {
+                    "action": "adopt",
+                    "revision": saved.revision,
+                    "attestation": "external_maintenance_complete",
+                }
+            ).encode()
+            result_payload = self.plugin._config_payload(store.describe())
+            result_payload["reconcile_result"] = "recovered"
+            with patch.object(
+                self.plugin, "CONFIG_STORE", store
+            ), patch.object(
+                self.plugin,
+                "get_status",
+                return_value={"healthy": True, "container": {"running": True}},
+            ), patch.object(
+                self.plugin,
+                "_run_config_reconciler",
+                return_value=result_payload,
+            ) as reconcile:
+                intent_response = asyncio.run(
+                    self.plugin.config_intent_route(FakeRequest(intent_body))
+                )
+                token = response_json(intent_response)["intent"]
+                adopt_body = json.dumps(
+                    {"intent": token, "revision": saved.revision}
+                ).encode()
+                recovered = asyncio.run(
+                    self.plugin.config_adopt_route(FakeRequest(adopt_body))
+                )
+                replay = asyncio.run(
+                    self.plugin.config_adopt_route(FakeRequest(adopt_body))
+                )
+
+        self.assertEqual(intent_response.status_code, 200)
+        self.assertEqual(recovered.status_code, 200)
+        reconcile.assert_called_once_with("recover_adopt", saved.revision, token)
+        self.assertEqual(replay.status_code, 409)
+        self.assertEqual(response_json(replay)["error"]["code"], "invalid_intent")
 
 
 if __name__ == "__main__":

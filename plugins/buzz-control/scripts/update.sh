@@ -1,22 +1,46 @@
 #!/bin/sh
 set -eu
 
-TRIGGER=${1:-manual}
-case "$TRIGGER" in
-  manual|scheduled) ;;
-  *) echo "Usage: update.sh [manual|scheduled]" >&2; exit 2 ;;
-esac
-
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PLUGIN_ROOT=$(dirname -- "$SCRIPT_DIR")
-CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
+RECONCILER="$SCRIPT_DIR/reconcile.py"
+
+if [ "${1:-}" != "--reconciler-image" ]; then
+  TRIGGER=${1:-manual}
+  case "$TRIGGER" in
+    manual|scheduled) ;;
+    *) echo "Usage: update.sh [manual|scheduled]" >&2; exit 2 ;;
+  esac
+  PYTHON_BIN=${BUZZ_CONTROL_PYTHON_BIN:-/usr/bin/python3}
+  case "$PYTHON_BIN" in
+    /*) ;;
+    *) echo "Buzz reconciler Python path must be absolute." >&2; exit 2 ;;
+  esac
+  if [ ! -x "$PYTHON_BIN" ] || [ ! -f "$RECONCILER" ]; then
+    echo "Buzz reconciler runtime is unavailable." >&2
+    exit 1
+  fi
+  exec "$PYTHON_BIN" "$RECONCILER" image "$TRIGGER"
+fi
+
+if [ "${BUZZ_CONTROL_RECONCILER_CHILD:-}" != "1" ] || [ "$#" -ne 4 ]; then
+  echo "Buzz internal updater mode requires the reconciler." >&2
+  exit 2
+fi
+TRIGGER=$2
+ENV_FILE=$3
+BLOCK_RECREATE=$4
+case "$TRIGGER:$BLOCK_RECREATE" in
+  manual:true|manual:false|scheduled:true|scheduled:false) ;;
+  *) echo "Buzz internal updater invocation is invalid." >&2; exit 2 ;;
+esac
+
 HERMES_ROOT=${HERMES_HOME:-"$HOME/.hermes"}
 
 DOCKER_BIN=${BUZZ_CONTROL_DOCKER_BIN:-/usr/local/bin/docker}
 COMPOSE_BIN=${BUZZ_CONTROL_COMPOSE_BIN:-/usr/local/bin/docker-compose}
 DOCKER_HOST=${BUZZ_CONTROL_DOCKER_HOST:-unix:///var/run/docker.sock}
 DEPLOY_DIR=${BUZZ_CONTROL_DEPLOY_DIR:-"$PLUGIN_ROOT/deploy"}
-ENV_FILE=${BUZZ_CONTROL_ENV_FILE:-"$CONFIG_HOME/buzz/prod.env"}
 COMPOSE_FILE=${BUZZ_CONTROL_COMPOSE_FILE:-"$DEPLOY_DIR/compose.yml"}
 OVERRIDE_FILE=${BUZZ_CONTROL_OVERRIDE_FILE:-"$DEPLOY_DIR/compose.local.yml"}
 PROJECT=${BUZZ_CONTROL_COMPOSE_PROJECT:-buzz-prod}
@@ -24,7 +48,6 @@ SERVICE=${BUZZ_CONTROL_COMPOSE_SERVICE:-relay}
 IMAGE=${BUZZ_CONTROL_IMAGE:-ghcr.io/block/buzz:main}
 STATE_DIR=${BUZZ_CONTROL_STATE_DIR:-"$HERMES_ROOT/state/buzz-control"}
 STATE_FILE="$STATE_DIR/update-state"
-LOCK_DIR="$STATE_DIR/update.lock"
 DOCKER_CONFIG_DIR="$STATE_DIR/docker-anonymous"
 EXECUTION_TIMEOUT=${BUZZ_CONTROL_EXECUTION_TIMEOUT_SECONDS:-900}
 OPERATION_OUTPUT="$STATE_DIR/operation.$$"
@@ -82,42 +105,7 @@ chmod 700 "$STATE_DIR"
 
 cleanup() {
   rm -f "$OPERATION_OUTPUT"
-  if [ -d "$LOCK_DIR" ]; then
-    owner=$(sed -n 's/^pid=//p' "$LOCK_DIR/owner" 2>/dev/null || true)
-    if [ "$owner" = "$$" ]; then
-      rm -f "$LOCK_DIR/owner"
-      rmdir "$LOCK_DIR" 2>/dev/null || true
-    fi
-  fi
 }
-
-acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf 'pid=%s\nstarted_at=%s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$LOCK_DIR/owner"
-    return 0
-  fi
-
-  owner=$(sed -n 's/^pid=//p' "$LOCK_DIR/owner" 2>/dev/null || true)
-  case "$owner" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-  if kill -0 "$owner" 2>/dev/null; then
-    return 1
-  fi
-
-  rm -f "$LOCK_DIR/owner"
-  rmdir "$LOCK_DIR" 2>/dev/null || return 1
-  mkdir "$LOCK_DIR" 2>/dev/null || return 1
-  printf 'pid=%s\nstarted_at=%s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$LOCK_DIR/owner"
-}
-
-if ! acquire_lock; then
-  if [ "$TRIGGER" = "scheduled" ]; then
-    exit 0
-  fi
-  echo "Another Buzz update is already running." >&2
-  exit 75
-fi
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$DOCKER_CONFIG_DIR"
@@ -267,12 +255,6 @@ write_state() {
   fi
 }
 
-failure_detail() {
-  if [ -f "$OPERATION_OUTPUT" ]; then
-    safe_text "$(tail -n 8 "$OPERATION_OUTPUT")"
-  fi
-}
-
 fail_update() {
   result=$1
   message=$2
@@ -312,9 +294,7 @@ else
   if [ "$status" -eq 124 ]; then
     fail_update "timed_out" "The Buzz update exceeded its safe execution window while pulling the relay image; the running relay was not changed." "$old_image_id" "$old_image_id" "" "" "" "" "false"
   fi
-  detail=$(failure_detail)
   message="Buzz could not check or pull the relay image; the running relay was not changed."
-  [ -z "$detail" ] || message="$message $detail"
   fail_update "pull_failed" "$message" "$old_image_id" "$old_image_id" "" "" "" "" "false"
 fi
 rm -f "$OPERATION_OUTPUT"
@@ -371,6 +351,10 @@ if [ -n "$old_image_id" ] && [ "$old_image_id" = "$new_image_id" ]; then
   exit 0
 fi
 
+if [ "$BLOCK_RECREATE" = "true" ]; then
+  fail_update "baseline_missing" "Buzz checked the latest image but did not recreate the relay because no applied configuration baseline has been adopted." "$old_image_id" "$old_image_id" "$new_image_id" "$latest_digest" "$latest_revision" "$latest_created" "true"
+fi
+
 if compose up -d --wait --no-deps --pull never "$SERVICE" > "$OPERATION_OUTPUT" 2>&1; then
   :
 else
@@ -387,9 +371,7 @@ else
     fi
     running_after=""
   fi
-  detail=$(failure_detail)
   message="Buzz could not apply the pulled relay image; inspect the relay logs before retrying."
-  [ -z "$detail" ] || message="$message $detail"
   fail_update "apply_failed" "$message" "$old_image_id" "$running_after" "$new_image_id" "$latest_digest" "$latest_revision" "$latest_created" "true"
 fi
 rm -f "$OPERATION_OUTPUT"
