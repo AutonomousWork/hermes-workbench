@@ -56,10 +56,13 @@ the confirmation token or configuration values. None of these files has a
 dashboard download route.
 
 An upgraded installation with no `applied.env` starts in
-**`baseline_missing`**. This is intentional: installation and GET requests do
-not silently declare an unverified production file safe. Save, Apply, and relay
-recreation remain blocked until the operator explicitly adopts the current
-healthy runtime. Image checks may still pull and compare the public image.
+**`baseline_missing`**. Installation and GET requests do not silently declare
+an unverified production file safe. The next manual or scheduled image update
+automatically establishes the baseline only when the running relay exactly
+matches `prod.env` and passes Docker and HTTP health checks, so ordinary image
+updates do not require the configuration UI. A mismatched or unhealthy runtime
+remains blocked until the operator resolves it and explicitly adopts the current
+healthy configuration.
 
 ## Managed settings
 
@@ -114,10 +117,12 @@ reconciler and lock:
 
 1. Select `applied.env` whenever an applied baseline exists; a scheduled update
    cannot consume a later external edit or bypass Save/Apply policy.
-2. Pull `ghcr.io/block/buzz:main` using an authentication-free Docker config.
-3. Compare immutable image IDs.
-4. Recreate only `relay` when the ID changed and an applied baseline exists.
-5. Verify Docker health and atomically save a non-secret dashboard receipt.
+2. When the baseline is missing, adopt `prod.env` only after verifying that the
+   running Compose generation and health match it.
+3. Pull `ghcr.io/block/buzz:main` using an authentication-free Docker config.
+4. Compare immutable image IDs.
+5. Recreate only `relay` when the ID changed and a verified baseline exists.
+6. Verify Docker health and atomically save a non-secret dashboard receipt.
 
 Reinstalling refreshes the wrapper while preserving an operator-edited cadence,
 paused state, and delivery setting.

@@ -35,14 +35,14 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(manifest["entry"], "dist/index.js")
         self.assertEqual(manifest["css"], "dist/style.css")
         self.assertEqual(manifest["api"], "plugin_api.py")
-        self.assertEqual(manifest["version"], "1.2.0")
+        self.assertEqual(manifest["version"], "1.2.1")
 
     def test_release_metadata_and_operator_runbook_cover_config_trust_model(self):
         runtime_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text()
         readme = (PLUGIN_ROOT / "README.md").read_text().lower()
         installer = INSTALLER.read_text()
 
-        self.assertIn("version: 1.2.0", runtime_manifest)
+        self.assertIn("version: 1.2.1", runtime_manifest)
         for required in (
             "not projected",
             "baseline_missing",

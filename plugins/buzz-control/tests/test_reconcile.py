@@ -134,6 +134,29 @@ class ReconcilerTests(unittest.TestCase):
         )
         return runner, store, paths, saved, token, call_log
 
+    def run_image_with_stubbed_updater(self, runner, trigger, returncode):
+        completed = subprocess.CompletedProcess(["update"], returncode)
+        real_run = subprocess.run
+
+        def run_command(command, *args, **kwargs):
+            if command[0] == str(self.reconcile.UPDATER_PATH):
+                return completed
+            return real_run(command, *args, **kwargs)
+
+        with patch.object(
+            self.reconcile.subprocess,
+            "run",
+            side_effect=run_command,
+        ) as run:
+            result = runner.image(trigger)
+
+        updater_call = next(
+            item
+            for item in run.call_args_list
+            if item.args[0][0] == str(self.reconcile.UPDATER_PATH)
+        )
+        return result, updater_call.args[0], updater_call.kwargs
+
     def test_settings_use_xdg_config_home_for_the_desired_file(self):
         with patch.dict(
             os.environ,
@@ -476,6 +499,99 @@ class ReconcilerTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[3], str(paths.applied))
             self.assertEqual(command[4], "false")
+
+    def test_image_update_auto_establishes_verified_baseline_when_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner, store, paths, _saved, _token, _call_log = self.make_runner(
+                Path(td), 3300
+            )
+            paths.applied.unlink()
+            result, command, _options = self.run_image_with_stubbed_updater(
+                runner, "scheduled", 0
+            )
+
+            self.assertEqual(result, 0)
+            view = store.describe()
+            self.assertEqual(view.baseline_state, "established")
+            self.assertFalse(view.pending)
+            self.assertEqual(paths.applied.read_bytes(), paths.desired.read_bytes())
+            self.assertEqual(view.journal["action"], "auto_adopt")
+            self.assertEqual(command[3], str(paths.applied))
+            self.assertEqual(command[4], "false")
+
+    def test_image_update_does_not_auto_adopt_a_mismatched_runtime(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner, store, paths, _saved, _token, _call_log = self.make_runner(
+                Path(td), 3300, config_hash_match=False
+            )
+            paths.applied.unlink()
+            result, command, _options = self.run_image_with_stubbed_updater(
+                runner, "scheduled", 1
+            )
+
+            self.assertEqual(result, 1)
+            self.assertEqual(store.describe().baseline_state, "baseline_missing")
+            self.assertFalse(paths.applied.exists())
+            self.assertEqual(command[3], str(paths.desired))
+            self.assertEqual(command[4], "true")
+
+    def test_image_update_passes_remaining_budget_after_auto_adoption(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner, _store, paths, _saved, _token, _call_log = self.make_runner(
+                Path(td), 3300
+            )
+            paths.applied.unlink()
+            real_promote = runner._promote_matching_runtime_locked
+
+            def promote_after_slow_preflight(*args, **kwargs):
+                view = real_promote(*args, **kwargs)
+                runner.deadline = self.reconcile.time.monotonic() + 4.9
+                return view
+
+            runner._promote_matching_runtime_locked = promote_after_slow_preflight
+            result, _command, options = self.run_image_with_stubbed_updater(
+                runner, "scheduled", 0
+            )
+
+            child_budget = int(
+                options["env"]["BUZZ_CONTROL_EXECUTION_TIMEOUT_SECONDS"]
+            )
+            self.assertEqual(result, 0)
+            self.assertGreaterEqual(child_budget, 1)
+            self.assertLess(child_budget, runner.settings.timeout)
+            self.assertEqual(options["timeout"], child_budget + 3.0)
+
+    def test_image_update_does_not_auto_adopt_an_unhealthy_runtime(self):
+        scenarios = {
+            "missing container": lambda runner: setattr(
+                runner, "_container_id", lambda *_args, **_kwargs: ""
+            ),
+            "unhealthy Docker state": lambda runner: setattr(
+                runner, "_container_health", lambda _container_id: "unhealthy"
+            ),
+            "failed HTTP liveness": lambda runner: setattr(
+                runner, "_http_healthy", lambda _env_file: False
+            ),
+        }
+        for name, configure in scenarios.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                runner, store, paths, _saved, _token, _call_log = self.make_runner(
+                    Path(td), 3300
+                )
+                paths.applied.unlink()
+                configure(runner)
+
+                result, command, _options = self.run_image_with_stubbed_updater(
+                    runner, "scheduled", 1
+                )
+
+                self.assertEqual(result, 1)
+                self.assertEqual(
+                    store.describe().baseline_state, "baseline_missing"
+                )
+                self.assertFalse(paths.applied.exists())
+                self.assertEqual(command[3], str(paths.desired))
+                self.assertEqual(command[4], "true")
 
     def test_image_child_timeout_is_translated_to_safe_failure(self):
         with tempfile.TemporaryDirectory() as td:
