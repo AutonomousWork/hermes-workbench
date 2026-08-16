@@ -60,9 +60,10 @@ An upgraded installation with no `applied.env` starts in
 an unverified production file safe. The next manual or scheduled image update
 automatically establishes the baseline only when the running relay exactly
 matches `prod.env` and passes Docker and HTTP health checks, so ordinary image
-updates do not require the configuration UI. A mismatched or unhealthy runtime
-remains blocked until the operator resolves it and explicitly adopts the current
-healthy configuration.
+updates do not require the configuration UI. Recreation remains blocked until
+either automatic verification completes successfully or the operator explicitly
+adopts the current healthy configuration; subsequent manual or scheduled updates
+retry automatic baseline establishment while it remains missing.
 
 ## Managed settings
 
