@@ -71,7 +71,7 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("Latest updates", bundle)
         self.assertIn("Managed schedule", bundle)
         self.assertIn("buzz-control-image-update", bundle)
-        self.assertIn("Save update settings", bundle)
+        self.assertIn('"Saving…" : "Save"', bundle)
         self.assertIn('modeTarget === "scheduled" ? "resume" : "pause"', bundle)
         self.assertIn('{ value: "every 60m", label: "Every hour" }', bundle)
         self.assertIn('{ value: "every 10080m", label: "Weekly" }', bundle)
@@ -137,6 +137,7 @@ class PluginContractTests(unittest.TestCase):
             r"(?s)\.buzz-control__relay-primary--tailscale\s*\{[^}]*#3fb97d",
         )
         self.assertIn(".buzz-control__schedule-controls", stylesheet)
+        self.assertIn(".buzz-control__schedule-mode-options > button", stylesheet)
         self.assertIn('.buzz-control__schedule-mode-options [aria-pressed="true"]', stylesheet)
         self.assertNotIn(".nesquena-control", stylesheet)
 

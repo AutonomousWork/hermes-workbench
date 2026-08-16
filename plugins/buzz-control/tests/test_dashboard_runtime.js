@@ -351,11 +351,11 @@ async function managedScheduleCadenceUsesHermesCronUpdate() {
 
   assert.equal(harness.select("Update cadence").props.value, "every 720m");
   assert.equal(harness.detailValue("Cadence"), "Every 12 hours");
-  assert.equal(harness.button("Save update settings").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
 
   harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
   harness.rerender();
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   await drainPromises();
 
   assert.equal(harness.requests[3].url, "/api/cron/jobs/buzz-job-id?profile=default");
@@ -385,7 +385,7 @@ async function customCronCadenceStartsAsCurrentAndClean() {
 
   assert.equal(harness.select("Update cadence").props.value, expression);
   assert.match(harness.textContent(), /Current cadence \(15 2 \* \* 1-5\)/);
-  assert.equal(harness.button("Save update settings").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
 }
 
 async function combinedScheduleSaveUsesReturnedJobForModeMutation() {
@@ -396,7 +396,7 @@ async function combinedScheduleSaveUsesReturnedJobForModeMutation() {
   harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
   harness.button("Manual only").props.onClick();
   harness.rerender();
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   await drainPromises();
 
   assert.equal(harness.requests[3].options.method, "PUT");
@@ -422,7 +422,7 @@ async function combinedScheduleSaveUsesReturnedJobForModeMutation() {
   harness.rerender();
 
   assert.match(harness.textContent(), /Buzz update settings saved/);
-  assert.equal(harness.button("Save update settings").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
 }
 
 async function partialScheduleSaveRetainsOnlyFailedSetting() {
@@ -433,7 +433,7 @@ async function partialScheduleSaveRetainsOnlyFailedSetting() {
   harness.select("Update cadence").props.onChange({ target: { value: "every 360m" } });
   harness.button("Manual only").props.onClick();
   harness.rerender();
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   cadence.resolve(cronJob({
     schedule: { kind: "interval", minutes: 360, display: "every 360m" },
     schedule_display: "every 360m",
@@ -447,7 +447,7 @@ async function partialScheduleSaveRetainsOnlyFailedSetting() {
   assert.match(harness.textContent(), /Cadence saved, but update mode could not be saved: Pause unavailable/);
   assert.equal(harness.select("Update cadence").props.value, "every 360m");
   assert.equal(harness.button("Manual only").props["aria-pressed"], true);
-  assert.equal(harness.button("Save update settings").props.disabled, false);
+  assert.equal(harness.button("Save").props.disabled, false);
 }
 
 async function managedScheduleModePausesAndResumesExistingJob() {
@@ -458,7 +458,7 @@ async function managedScheduleModePausesAndResumesExistingJob() {
   assert.equal(harness.button("Scheduled").props["aria-pressed"], true);
   harness.button("Manual only").props.onClick();
   harness.rerender();
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   await drainPromises();
 
   assert.equal(
@@ -476,7 +476,7 @@ async function managedScheduleModePausesAndResumesExistingJob() {
 
   harness.button("Scheduled").props.onClick();
   harness.rerender();
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   await drainPromises();
 
   assert.equal(
@@ -513,7 +513,7 @@ async function schedulePollingPreservesUnsavedSelection() {
   harness.rerender();
 
   assert.equal(harness.select("Update cadence").props.value, "every 360m");
-  assert.equal(harness.button("Save update settings").props.disabled, false);
+  assert.equal(harness.button("Save").props.disabled, false);
 }
 
 async function modeDraftDoesNotOverwriteExternalCadenceChange() {
@@ -544,7 +544,7 @@ async function modeDraftDoesNotOverwriteExternalCadenceChange() {
   harness.rerender();
 
   assert.equal(harness.select("Update cadence").props.value, "every 360m");
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   await drainPromises();
   assert.equal(harness.requests[4].options.method, "POST");
   assert.match(harness.requests[4].url, /\/pause\?profile=default$/);
@@ -570,7 +570,7 @@ async function revertedScheduleDraftResynchronizesOnExternalPoll() {
   harness.rerender();
   harness.select("Update cadence").props.onChange({ target: { value: "every 720m" } });
   harness.rerender();
-  assert.equal(harness.button("Save update settings").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
 
   harness.intervals[2].callback();
   polledCron.resolve([cronJob({
@@ -581,7 +581,7 @@ async function revertedScheduleDraftResynchronizesOnExternalPoll() {
   harness.rerender();
 
   assert.equal(harness.select("Update cadence").props.value, "every 180m");
-  assert.equal(harness.button("Save update settings").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
 }
 
 async function scheduleMutationFailureKeepsDraftForRetry() {
@@ -590,7 +590,7 @@ async function scheduleMutationFailureKeepsDraftForRetry() {
 
   harness.select("Update cadence").props.onChange({ target: { value: "every 180m" } });
   harness.rerender();
-  harness.button("Save update settings").props.onClick();
+  harness.button("Save").props.onClick();
   save.reject(new Error('400: {"detail":"Invalid schedule"}'));
   await drainPromises();
   await drainPromises();
@@ -598,7 +598,7 @@ async function scheduleMutationFailureKeepsDraftForRetry() {
 
   assert.match(harness.textContent(), /Invalid schedule/);
   assert.equal(harness.select("Update cadence").props.value, "every 180m");
-  assert.equal(harness.button("Save update settings").props.disabled, false);
+  assert.equal(harness.button("Save").props.disabled, false);
 }
 
 async function missingManagedScheduleCannotMutateCron() {
@@ -607,7 +607,7 @@ async function missingManagedScheduleCannotMutateCron() {
   assert.match(harness.textContent(), /Create or repair it in Hermes Cron/);
   assert.equal(harness.button("Scheduled").props.disabled, true);
   assert.equal(harness.button("Manual only").props.disabled, true);
-  assert.equal(harness.button("Save update settings").props.disabled, true);
+  assert.equal(harness.button("Save").props.disabled, true);
 }
 
 async function stalePollsCannotOverwriteUpdateResult() {

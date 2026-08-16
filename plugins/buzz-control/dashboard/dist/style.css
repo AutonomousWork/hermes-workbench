@@ -478,16 +478,15 @@
 
 .buzz-control__schedule-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.72fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px) auto;
   gap: 0.75rem;
   align-items: end;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md, 0.5rem);
-  padding: 0.85rem;
-  background: color-mix(in srgb, var(--color-background) 48%, transparent);
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.75rem;
 }
 
 .buzz-control__schedule-mode {
+  grid-column: 1;
   min-width: 0;
   margin: 0;
   border: 0;
@@ -503,19 +502,54 @@
 }
 
 .buzz-control__schedule-mode-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.45rem;
+  display: inline-grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 2px;
+  width: fit-content;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.35rem);
+  padding: 2px;
+  background: color-mix(in srgb, var(--color-background) 55%, transparent);
+}
+
+.buzz-control__schedule-mode-options > button {
+  min-height: 2rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm, 0.35rem) - 2px);
+  padding: 0.35rem 0.7rem;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  box-shadow: none;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.buzz-control__schedule-mode-options > button:hover:not(:disabled) {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
 }
 
 .buzz-control__schedule-mode-options [aria-pressed="true"] {
-  border-color: color-mix(in srgb, #3fb97d 55%, var(--color-border));
-  box-shadow: 0 0 0 1px color-mix(in srgb, #3fb97d 20%, transparent);
+  color: var(--color-foreground);
+  background: color-mix(in srgb, #3fb97d 13%, var(--color-card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #3fb97d 38%, var(--color-border));
 }
 
 .buzz-control__schedule-cadence {
   display: grid;
+  grid-column: 2;
+  justify-self: end;
+  width: 100%;
   min-width: 0;
+}
+
+.buzz-control__schedule-controls > button {
+  grid-column: 3;
+  min-height: 2.1rem;
+  justify-self: end;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.76rem;
+  white-space: nowrap;
 }
 
 .buzz-control__schedule-hint,
@@ -555,11 +589,7 @@
   }
 
   .buzz-control__schedule-controls {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .buzz-control__schedule-controls > button {
-    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) minmax(170px, 220px) auto;
   }
 }
 
@@ -591,11 +621,25 @@
   }
 
   .buzz-control__schedule-controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .buzz-control__schedule-controls > button {
-    grid-column: auto;
+    grid-column: 2;
+  }
+
+  .buzz-control__schedule-cadence {
+    grid-column: 1;
+    justify-self: stretch;
+  }
+
+  .buzz-control__schedule-mode {
+    grid-column: 1 / -1;
+  }
+
+  .buzz-control__schedule-mode-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
   }
 
   .buzz-control__schedule .buzz-control__details,

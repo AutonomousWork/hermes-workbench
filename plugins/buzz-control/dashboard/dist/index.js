@@ -1106,7 +1106,7 @@
                   onClick: saveSchedule,
                   disabled: !scheduleDirty || !!busy,
                   "aria-busy": busy === "schedule",
-                }, busy === "schedule" ? "Saving settings…" : "Save update settings"),
+                }, busy === "schedule" ? "Saving…" : "Save"),
               ),
               h("dl", { className: "buzz-control__details" },
                 h(DetailRow, { label: "Cadence", value: scheduleCadenceLabel(schedule) }),
