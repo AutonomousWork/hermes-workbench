@@ -20,13 +20,14 @@ function deferred() {
   return { promise, reject, resolve };
 }
 
-function createHarness(statusRequests, updateRequests, actionRequests, cronRequests) {
+function createHarness(statusRequests, updateRequests, actionRequests, cronRequests, configRequests) {
   const state = [];
   const refs = [];
   const effects = [];
   const intervals = [];
   const requests = [];
   const confirmations = [];
+  const eventListeners = {};
   let component;
   let hookCursor = 0;
 
@@ -72,6 +73,7 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
     CardTitle: "CardTitle",
   };
   cronRequests = cronRequests || [];
+  configRequests = configRequests || [];
   const window = {
     __HERMES_PLUGINS__: {
       register: function (_name, registeredComponent) {
@@ -84,8 +86,9 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
       fetchJSON: function (url, options) {
         requests.push({ options: options, url: url });
         let queue;
-        if (options && options.method === "POST") queue = actionRequests;
+        if (options && options.method && options.method !== "GET") queue = actionRequests;
         else if (url === "/api/cron/jobs?profile=all") queue = cronRequests;
+        else if (url.endsWith("/config")) queue = configRequests;
         else if (url.endsWith("/updates")) queue = updateRequests;
         else queue = statusRequests;
         assert.ok(queue.length, "unexpected request: " + url);
@@ -94,7 +97,9 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
       hooks: hooks,
     },
     clearInterval: function () {},
+    addEventListener: function (name, callback) { eventListeners[name] = callback; },
     confirm: function (message) { confirmations.push(message); return true; },
+    removeEventListener: function (name) { delete eventListeners[name]; },
     setInterval: function (callback, milliseconds) {
       intervals.push({ callback: callback, milliseconds: milliseconds });
       return intervals.length;
@@ -109,6 +114,7 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
     const pending = [tree];
     while (pending.length) {
       const node = pending.pop();
+      if (Array.isArray(node)) { pending.push.apply(pending, node); continue; }
       if (!node || typeof node !== "object") continue;
       if (node.type === "Button" && node.props.children.includes(label)) return node;
       pending.push.apply(pending, node.props && node.props.children || []);
@@ -120,6 +126,7 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
     const pending = [tree];
     while (pending.length) {
       const node = pending.pop();
+      if (Array.isArray(node)) { pending.push.apply(pending, node); continue; }
       if (!node || typeof node !== "object") continue;
       if (
         typeof node.type === "function"
@@ -131,11 +138,48 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
     return undefined;
   }
 
+  function nodeWithClassName(className) {
+    const pending = [tree];
+    while (pending.length) {
+      const node = pending.pop();
+      if (Array.isArray(node)) { pending.push.apply(pending, node); continue; }
+      if (!node || typeof node !== "object") continue;
+      if (node.props && node.props.className === className) return node;
+      pending.push.apply(pending, node.props && node.props.children || []);
+    }
+    return undefined;
+  }
+
+  function input(label) {
+    const pending = [tree];
+    while (pending.length) {
+      const node = pending.pop();
+      if (Array.isArray(node)) { pending.push.apply(pending, node); continue; }
+      if (!node || typeof node !== "object") continue;
+      if (node.type === "input" && node.props["aria-label"] === label) return node;
+      pending.push.apply(pending, node.props && node.props.children || []);
+    }
+    throw new Error("input not found: " + label);
+  }
+
+  function select(label) {
+    const pending = [tree];
+    while (pending.length) {
+      const node = pending.pop();
+      if (Array.isArray(node)) { pending.push.apply(pending, node); continue; }
+      if (!node || typeof node !== "object") continue;
+      if (node.type === "select" && node.props["aria-label"] === label) return node;
+      pending.push.apply(pending, node.props && node.props.children || []);
+    }
+    throw new Error("select not found: " + label);
+  }
+
   function textContent() {
     const text = [];
     const pending = [tree];
     while (pending.length) {
       const node = pending.shift();
+      if (Array.isArray(node)) { pending.push.apply(pending, node); continue; }
       if (typeof node === "string" || typeof node === "number") {
         text.push(String(node));
         continue;
@@ -151,9 +195,12 @@ function createHarness(statusRequests, updateRequests, actionRequests, cronReque
     confirmations: confirmations,
     detailValue: detailValue,
     intervals: intervals,
+    nodeWithClassName: nodeWithClassName,
+    input: input,
     requests: requests,
     rerender: function () { hookCursor = 0; tree = component(); },
     runEffects: function () { return effects.map(function (effect) { return effect(); }); },
+    select: select,
     state: state,
     textContent: textContent,
   };
@@ -388,6 +435,338 @@ async function failedLatestCheckShowsOnlyTheCurrentError() {
   assert.doesNotMatch(harness.textContent(), /older verification failed/i);
 }
 
+async function baselineMissingReceiptOffersAdoptionGuidance() {
+  const status = deferred();
+  const updates = deferred();
+  const cron = deferred();
+  const harness = createHarness([status], [updates], [], [cron]);
+
+  harness.runEffects();
+  status.resolve({ healthy: true, container: { running: true } });
+  updates.resolve({
+    update_available: false,
+    errors: [],
+    state: { result: "baseline_missing" },
+  });
+  cron.resolve([]);
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /verify the running configuration.*adopt it before saving or applying/i);
+  assert.doesNotMatch(harness.textContent(), /no reliable saved update result/i);
+}
+
+function configFixture(overrides) {
+  return Object.assign({
+    revision: "opaque_revision_abcdefghijklmnopqrstuvwxyz",
+    baseline_state: "established",
+    pending: false,
+    changed_keys: [],
+    impact_classes: [],
+    automatic_apply_allowed: false,
+    operation: {},
+    fields: [
+      {
+        name: "BUZZ_DOMAIN",
+        label: "Buzz domain",
+        group: "public_address",
+        configured: true,
+        disclosure: "plain",
+        impact: "relay_eligible",
+        editable: true,
+        kind: "text",
+        value: "first.test",
+      },
+      {
+        name: "BUZZ_REQUIRE_RELAY_MEMBERSHIP",
+        label: "Require relay membership",
+        group: "access_policy",
+        configured: true,
+        disclosure: "plain",
+        impact: "relay_high_impact",
+        editable: true,
+        kind: "bool",
+        value: "true",
+      },
+      {
+        name: "RELAY_OWNER_PUBKEY",
+        label: "Relay owner public key",
+        group: "owner_identity",
+        configured: true,
+        disclosure: "plain",
+        impact: "manual_maintenance",
+        editable: false,
+        kind: "text",
+        value: "owner-public-key",
+      },
+    ],
+  }, overrides || {});
+}
+
+async function opensProtectedEditorAndPausesDashboardPolling() {
+  const status = deferred();
+  const updates = deferred();
+  const cron = deferred();
+  const config = deferred();
+  const harness = createHarness([status], [updates], [], [cron], [config]);
+
+  harness.runEffects();
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(configFixture());
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Configure Buzz/);
+  assert.match(harness.textContent(), /Public address/);
+  assert.match(harness.textContent(), /Access policy/);
+  assert.match(harness.textContent(), /Owner identity/);
+  assert.doesNotMatch(harness.textContent(), /Postgres password/);
+  assert.doesNotMatch(harness.textContent(), /Unknown \/ local extensions/);
+  assert.equal(
+    harness.select("Edit BUZZ_REQUIRE_RELAY_MEMBERSHIP").props.value,
+    "true",
+  );
+  const requestCount = harness.requests.length;
+  harness.intervals.forEach(function (interval) { interval.callback(); });
+  assert.equal(harness.requests.length, requestCount, "dashboard polling must pause in the editor");
+}
+
+async function saveStagesOnlyManagedSettingsWithoutCallingApply() {
+  const config = deferred();
+  const save = deferred();
+  const harness = createHarness([], [], [save], [], [config]);
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(configFixture());
+  await drainPromises();
+  harness.rerender();
+  harness.input("Edit BUZZ_DOMAIN").props.onChange({ target: { value: "second.test" } });
+  harness.rerender();
+  harness.button("Save changes").props.onClick();
+
+  const request = harness.requests[harness.requests.length - 1];
+  assert.equal(request.url, "/api/plugins/buzz-control/config");
+  assert.equal(request.options.method, "PUT");
+  const body = JSON.parse(request.options.body);
+  assert.deepEqual(body.replacements, { BUZZ_DOMAIN: "second.test" });
+  assert.equal(harness.requests.some(function (item) { return item.url.endsWith("/config/apply"); }), false);
+
+  save.resolve(configFixture({
+    pending: true,
+    changed_keys: ["BUZZ_DOMAIN"],
+    impact_classes: ["relay_eligible"],
+    automatic_apply_allowed: true,
+    wrote: true,
+    fields: configFixture().fields.map(function (field) {
+      return field.name === "BUZZ_DOMAIN" ? Object.assign({}, field, { value: "second.test" }) : field;
+    }),
+  }));
+  await drainPromises();
+  harness.rerender();
+  assert.match(harness.textContent(), /Changes saved. Buzz was not restarted/);
+}
+
+async function cancellingApplyReviewNeverSubmitsRuntimeMutation() {
+  const config = deferred();
+  const intent = deferred();
+  const harness = createHarness([], [], [intent], [], [config]);
+  const pending = configFixture({
+    pending: true,
+    changed_keys: ["BUZZ_DOMAIN"],
+    impact_classes: ["relay_eligible"],
+    automatic_apply_allowed: true,
+  });
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(pending);
+  await drainPromises();
+  harness.rerender();
+  harness.button("Review Apply").props.onClick();
+  intent.resolve({
+    intent: "operation-token-must-not-render",
+    action: "apply",
+    revision: pending.revision,
+    review: { changed_keys: ["BUZZ_DOMAIN"], impact_classes: ["relay_eligible"], high_impact: false },
+  });
+  await drainPromises();
+  harness.rerender();
+
+  assert.doesNotMatch(harness.textContent(), /operation-token-must-not-render/);
+  harness.button("Cancel").props.onClick();
+  harness.rerender();
+  assert.equal(harness.requests.filter(function (item) { return item.url.endsWith("/config/apply"); }).length, 0);
+}
+
+async function confirmedApplySendsBoundIntentAndKeepsEditorMounted() {
+  const config = deferred();
+  const intent = deferred();
+  const apply = deferred();
+  const harness = createHarness([], [], [intent, apply], [], [config]);
+  const pending = configFixture({
+    pending: true,
+    changed_keys: ["BUZZ_DOMAIN"],
+    impact_classes: ["relay_eligible"],
+    automatic_apply_allowed: true,
+  });
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(pending);
+  await drainPromises();
+  harness.rerender();
+  harness.button("Review Apply").props.onClick();
+  intent.resolve({
+    intent: "bound-operation-token",
+    action: "apply",
+    revision: pending.revision,
+    review: { changed_keys: ["BUZZ_DOMAIN"], impact_classes: ["relay_eligible"], high_impact: false },
+  });
+  await drainPromises();
+  harness.rerender();
+  harness.button("Confirm Apply").props.onClick();
+  harness.rerender();
+
+  const request = harness.requests[harness.requests.length - 1];
+  assert.equal(request.url, "/api/plugins/buzz-control/config/apply");
+  assert.deepEqual(JSON.parse(request.options.body), {
+    action: "apply",
+    intent: "bound-operation-token",
+    revision: pending.revision,
+  });
+  assert.equal(harness.button("Back to Buzz").props.disabled, true);
+  harness.button("Back to Buzz").props.onClick();
+  harness.rerender();
+  assert.match(harness.textContent(), /Configure Buzz/);
+
+  apply.resolve(configFixture({ pending: false, reconcile_result: "applied" }));
+  await drainPromises();
+  harness.rerender();
+  assert.match(harness.textContent(), /Buzz configuration applied and verified/);
+}
+
+async function applyingConfigurationKeepsReviewModalOpenUntilSettled() {
+  const config = deferred();
+  const intent = deferred();
+  const apply = deferred();
+  const harness = createHarness([], [], [intent, apply], [], [config]);
+  const pending = configFixture({
+    pending: true,
+    changed_keys: ["BUZZ_DOMAIN"],
+    impact_classes: ["relay_eligible"],
+    automatic_apply_allowed: true,
+  });
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(pending);
+  await drainPromises();
+  harness.rerender();
+  harness.button("Review Apply").props.onClick();
+  intent.resolve({
+    intent: "bound-operation-token",
+    action: "apply",
+    revision: pending.revision,
+    review: { changed_keys: ["BUZZ_DOMAIN"], impact_classes: ["relay_eligible"], high_impact: false },
+  });
+  await drainPromises();
+  harness.rerender();
+  harness.button("Confirm Apply").props.onClick();
+  harness.rerender();
+
+  const modal = harness.nodeWithClassName("buzz-control__modal");
+  let escapePrevented = false;
+  modal.props.onKeyDown({
+    key: "Escape",
+    preventDefault: function () { escapePrevented = true; },
+  });
+  harness.button("Cancel").props.onClick();
+  harness.rerender();
+
+  assert.equal(escapePrevented, true);
+  assert.equal(harness.button("Cancel").props.disabled, true);
+  assert.match(harness.textContent(), /Applying and verifying/);
+  assert.ok(harness.nodeWithClassName("buzz-control__modal"));
+
+  apply.resolve(configFixture({ pending: false, reconcile_result: "applied" }));
+  await drainPromises();
+  harness.rerender();
+
+  assert.equal(harness.nodeWithClassName("buzz-control__modal"), undefined);
+  assert.match(harness.textContent(), /Buzz configuration applied and verified/);
+}
+
+async function backIsDisabledWhileSaveIsInFlight() {
+  const config = deferred();
+  const save = deferred();
+  const harness = createHarness([], [], [save], [], [config]);
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(configFixture());
+  await drainPromises();
+  harness.rerender();
+  harness.input("Edit BUZZ_DOMAIN").props.onChange({ target: { value: "second.test" } });
+  harness.rerender();
+  harness.button("Save changes").props.onClick();
+  harness.rerender();
+
+  assert.equal(harness.button("Back to Buzz").props.disabled, true);
+  harness.button("Back to Buzz").props.onClick();
+  harness.rerender();
+  assert.match(harness.textContent(), /Configure Buzz/);
+
+  save.resolve(configFixture({ pending: true, wrote: true }));
+  await drainPromises();
+}
+
+async function baselineMissingBlocksEditingAndOffersExplicitAdoption() {
+  const config = deferred();
+  const harness = createHarness([], [], [], [], [config]);
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(configFixture({ baseline_state: "baseline_missing", pending: true }));
+  await drainPromises();
+  harness.rerender();
+
+  assert.equal(harness.button("Save changes").props.disabled, true);
+  assert.match(harness.textContent(), /Applied baseline required/);
+  harness.button("Adopt current healthy configuration");
+}
+
+async function degradedOperationOffersRecoveryInsteadOfMoreMutation() {
+  const config = deferred();
+  const harness = createHarness([], [], [], [], [config]);
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(configFixture({
+    pending: true,
+    changed_keys: ["BUZZ_DOMAIN"],
+    impact_classes: ["relay_eligible"],
+    automatic_apply_allowed: true,
+    operation: { phase: "degraded", outcome: "rollback_unverified" },
+  }));
+  await drainPromises();
+  harness.rerender();
+
+  assert.match(harness.textContent(), /Configuration recovery required/);
+  assert.equal(harness.button("Save changes").props.disabled, true);
+  assert.equal(harness.button("Review Apply").props.disabled, true);
+  assert.equal(harness.button("Restore last applied").props.disabled, true);
+  harness.button("Verify and recover configuration");
+}
+
+async function dirtyBackRequiresConfirmation() {
+  const config = deferred();
+  const harness = createHarness([], [], [], [], [config]);
+
+  harness.button("Configure Buzz").props.onClick();
+  config.resolve(configFixture());
+  await drainPromises();
+  harness.rerender();
+  harness.input("Edit BUZZ_DOMAIN").props.onChange({ target: { value: "dirty.test" } });
+  harness.rerender();
+  harness.button("Back to Buzz").props.onClick();
+
+  assert.match(harness.confirmations[harness.confirmations.length - 1], /Discard your unsaved/i);
+}
+
 async function main() {
   await pollsHealthAndUpdatesAtDifferentIntervals();
   await successfulStatusPollClearsTransientError();
@@ -397,6 +776,16 @@ async function main() {
   await stoppedRelayUsesExplicitStartCopy();
   await successfulLatestCheckHidesHistoricalFailure();
   await failedLatestCheckShowsOnlyTheCurrentError();
+  await baselineMissingReceiptOffersAdoptionGuidance();
+  await opensProtectedEditorAndPausesDashboardPolling();
+  await saveStagesOnlyManagedSettingsWithoutCallingApply();
+  await cancellingApplyReviewNeverSubmitsRuntimeMutation();
+  await confirmedApplySendsBoundIntentAndKeepsEditorMounted();
+  await applyingConfigurationKeepsReviewModalOpenUntilSettled();
+  await backIsDisabledWhileSaveIsInFlight();
+  await baselineMissingBlocksEditingAndOffersExplicitAdoption();
+  await degradedOperationOffersRecoveryInsteadOfMoreMutation();
+  await dirtyBackRequiresConfirmation();
 }
 
 main().catch(function (error) {

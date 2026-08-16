@@ -1,9 +1,9 @@
 {
   "name": "buzz-control",
   "label": "Buzz",
-  "description": "Inspect the local Buzz relay, see saved image checks, and safely apply the newest relay image.",
+  "description": "Manage core Buzz endpoint and access settings, inspect relay health, and reconcile images safely.",
   "icon": "RadioTower",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "tab": {
     "path": "/buzz",
     "position": "after:achievements"

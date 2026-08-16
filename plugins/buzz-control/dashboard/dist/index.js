@@ -13,6 +13,38 @@
   const API_ROOT = "/api/plugins/buzz-control";
   const CRON_URL = "/api/cron/jobs?profile=all";
   const JOB_NAME = "buzz-control-image-update";
+  const RECOVERY_PHASES = new Set([
+    "saving",
+    "restoring",
+    "adopting",
+    "recovering",
+    "applying",
+    "verifying",
+    "promoting",
+    "rolling_back",
+    "degraded",
+    "blocked",
+  ]);
+
+  const CONFIG_ERROR_LABELS = {
+    attestation_required: "Confirm that external maintenance is complete before adopting.",
+    baseline_missing: "Adopt the verified running configuration before saving or applying changes.",
+    browser_session_required: "Configuration changes require an authenticated browser session.",
+    busy: "Another Buzz operation is in progress. Try again after it finishes.",
+    degraded: "Rollback could not be verified. Follow the recovery runbook before continuing.",
+    invalid_document: "The production environment needs manual repair before it can be edited here.",
+    invalid_intent: "That confirmation expired or was already used. Review the action again.",
+    manual_maintenance_required: "These changes require external maintenance and verified adoption.",
+    no_pending_changes: "There are no saved changes to apply or restore.",
+    origin_mismatch: "The configuration request did not come from this dashboard origin.",
+    policy_changed: "The configuration changed after confirmation. Reload and review it again.",
+    recovery_required: "An interrupted Buzz operation must be recovered before continuing.",
+    relay_stopped: "Buzz is stopped. Use the separate Apply and start confirmation.",
+    request_too_large: "The configuration request is too large.",
+    runtime_unhealthy: "The running relay is not healthy enough to adopt.",
+    stale_revision: "The configuration changed elsewhere. Your edits are still here; reload when ready.",
+    unsafe_storage: "The protected configuration file or state directory is not safe.",
+  };
 
   function api(path, options) {
     return SDK.fetchJSON(API_ROOT + path, options);
@@ -29,6 +61,9 @@
     try {
       const parsed = JSON.parse(body);
       if (parsed && typeof parsed.detail === "string") return parsed.detail;
+      if (parsed && parsed.error && typeof parsed.error.code === "string") {
+        return CONFIG_ERROR_LABELS[parsed.error.code] || "The Buzz configuration operation failed safely.";
+      }
     } catch (_error) {
       // Plain text is already suitable for display.
     }
@@ -67,6 +102,7 @@
 
   const RESULT_LABELS = {
     already_current: "Buzz is current and healthy.",
+    baseline_missing: "Verify the running configuration, then adopt it before saving or applying changes.",
     updated: "Buzz was updated and is healthy.",
     stopped: "Automatic update failed because Buzz is stopped.",
     timed_out: "The Buzz update exceeded its safe execution window.",
@@ -96,6 +132,45 @@
     return Object.assign({}, job, { status: active ? "active" : "paused" });
   }
 
+  function initialDrafts(configuration) {
+    const drafts = {};
+    (configuration && configuration.fields || []).forEach(function (field) {
+      if (field.disclosure !== "write_only") drafts[field.name] = field.value || "";
+    });
+    return drafts;
+  }
+
+  function buildConfigPatch(configuration, drafts) {
+    const patch = {};
+    (configuration && configuration.fields || []).forEach(function (field) {
+      if (!field.editable) return;
+      if (field.disclosure === "write_only") return;
+      if ((drafts[field.name] || "") !== (field.value || "")) {
+        patch[field.name] = drafts[field.name] || "";
+      }
+    });
+    return patch;
+  }
+
+  function operationLabel(operation) {
+    const phase = operation && operation.phase;
+    return ({
+      saved: "Changes saved; runtime unchanged",
+      saving: "Saving protected configuration",
+      applying: "Applying saved configuration",
+      verifying: "Verifying Docker and HTTP health",
+      promoting: "Promoting verified configuration",
+      applied: "Running configuration verified",
+      rolling_back: "Restoring the last applied configuration",
+      rolled_back: "Rollback verified; saved changes remain pending",
+      blocked: "Configuration operations blocked",
+      degraded: "Manual recovery required",
+      adopting: "Verifying externally maintained configuration",
+      restoring: "Restoring the last applied configuration",
+      recovering: "Verifying recovered configuration",
+    }[phase] || "No configuration operation recorded");
+  }
+
   function DetailRow(props) {
     return h("div", { className: "buzz-control__detail-row" },
       h("dt", null, props.label),
@@ -120,6 +195,14 @@
     const [scheduleError, setScheduleError] = useState(null);
     const actionActiveRef = useRef(false);
     const generationRef = useRef(0);
+    const [view, setView] = useState("dashboard");
+    const [configuration, setConfiguration] = useState(null);
+    const [drafts, setDrafts] = useState({});
+    const [configBusy, setConfigBusy] = useState(null);
+    const [configError, setConfigError] = useState(null);
+    const [configNotice, setConfigNotice] = useState(null);
+    const [intentReview, setIntentReview] = useState(null);
+    const applyButtonRef = useRef(null);
 
     const acceptUpdates = useCallback(function (next) {
       setUpdates(next);
@@ -165,6 +248,7 @@
     }, []);
 
     useEffect(function () {
+      if (view !== "dashboard") return undefined;
       let active = true;
       let inFlight = false;
       function pollStatus() {
@@ -188,9 +272,24 @@
       pollStatus();
       const timer = window.setInterval(pollStatus, 15000);
       return function () { active = false; window.clearInterval(timer); };
-    }, []);
+    }, [view]);
+
+    const configPatch = buildConfigPatch(configuration, drafts);
+    const isConfigDirty = Object.keys(configPatch).length > 0;
 
     useEffect(function () {
+      if (typeof window.addEventListener !== "function") return undefined;
+      function warnBeforeUnload(event) {
+        if (view !== "config" || !isConfigDirty) return;
+        event.preventDefault();
+        event.returnValue = "";
+      }
+      window.addEventListener("beforeunload", warnBeforeUnload);
+      return function () { window.removeEventListener("beforeunload", warnBeforeUnload); };
+    }, [view, isConfigDirty]);
+
+    useEffect(function () {
+      if (view !== "dashboard") return undefined;
       let active = true;
       let inFlight = false;
       function pollUpdates() {
@@ -213,9 +312,10 @@
       pollUpdates();
       const timer = window.setInterval(pollUpdates, 300000);
       return function () { active = false; window.clearInterval(timer); };
-    }, [acceptUpdates]);
+    }, [acceptUpdates, view]);
 
     useEffect(function () {
+      if (view !== "dashboard") return undefined;
       let active = true;
       let inFlight = false;
       function pollSchedule() {
@@ -239,7 +339,7 @@
       pollSchedule();
       const timer = window.setInterval(pollSchedule, 60000);
       return function () { active = false; window.clearInterval(timer); };
-    }, []);
+    }, [view]);
 
     function runUpdate() {
       if (busy || actionActiveRef.current) return;
@@ -280,6 +380,154 @@
         .finally(function () { actionActiveRef.current = false; setBusy(null); });
     }
 
+    function jsonOptions(method, payload) {
+      return {
+        method: method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      };
+    }
+
+    function acceptConfiguration(next, message) {
+      setConfiguration(next);
+      setDrafts(initialDrafts(next));
+      setIntentReview(null);
+      setConfigError(null);
+      if (message) setConfigNotice(message);
+      return next;
+    }
+
+    function openConfiguration() {
+      if (busy || configBusy) return;
+      actionActiveRef.current = true;
+      generationRef.current += 1;
+      setView("config");
+      setConfigBusy("load");
+      setConfigError(null);
+      setConfigNotice(null);
+      api("/config")
+        .then(function (next) { acceptConfiguration(next); })
+        .catch(function (failure) { setConfigError(errorMessage(failure)); })
+        .finally(function () { setConfigBusy(null); });
+    }
+
+    function leaveConfiguration() {
+      if (configBusy) return;
+      if (isConfigDirty && !window.confirm("Discard your unsaved Buzz configuration edits?")) return;
+      setView("dashboard");
+      setConfiguration(null);
+      setDrafts({});
+      setIntentReview(null);
+      setConfigError(null);
+      setConfigNotice(null);
+      actionActiveRef.current = false;
+      generationRef.current += 1;
+    }
+
+    function updateDraft(name, value) {
+      setDrafts(function (currentDrafts) {
+        return Object.assign({}, currentDrafts, { [name]: value });
+      });
+    }
+
+    function saveConfiguration() {
+      if (!configuration || configBusy || !isConfigDirty) return;
+      setConfigBusy("save");
+      setConfigError(null);
+      setConfigNotice(null);
+      api("/config", jsonOptions("PUT", {
+        base_revision: configuration.revision,
+        replacements: configPatch,
+      }))
+        .then(function (next) {
+          acceptConfiguration(next, next.wrote ? "Changes saved. Buzz was not restarted." : "No configuration values changed.");
+        })
+        .catch(function (failure) { setConfigError(errorMessage(failure)); })
+        .finally(function () { setConfigBusy(null); });
+    }
+
+    function prepareApply() {
+      if (!configuration || configBusy) return;
+      const action = stopped ? "apply_start" : "apply";
+      setConfigBusy("intent");
+      setConfigError(null);
+      api("/config/intent", jsonOptions("POST", {
+        action: action,
+        revision: configuration.revision,
+      }))
+        .then(function (intent) { setIntentReview(Object.assign({}, intent, { action: action })); })
+        .catch(function (failure) { setConfigError(errorMessage(failure)); })
+        .finally(function () { setConfigBusy(null); });
+    }
+
+    function cancelApply() {
+      if (configBusy === "apply") return;
+      setIntentReview(null);
+      if (applyButtonRef.current && typeof applyButtonRef.current.focus === "function") {
+        applyButtonRef.current.focus();
+      }
+    }
+
+    function confirmApply() {
+      if (!intentReview || configBusy) return;
+      setConfigBusy("apply");
+      setConfigError(null);
+      api("/config/apply", jsonOptions("POST", {
+        action: intentReview.action,
+        intent: intentReview.intent,
+        revision: intentReview.revision,
+      }))
+        .then(function (next) {
+          const message = next.reconcile_result === "rolled_back"
+            ? "Apply failed; the last applied runtime was restored. Your saved changes remain pending."
+            : "Buzz configuration applied and verified.";
+          acceptConfiguration(next, message);
+        })
+        .catch(function (failure) { setConfigError(errorMessage(failure)); setIntentReview(null); })
+        .finally(function () { setConfigBusy(null); });
+    }
+
+    function restoreConfiguration() {
+      if (!configuration || configBusy) return;
+      if (!window.confirm("Restore the desired file from the last applied configuration? Buzz will not restart.")) return;
+      setConfigBusy("restore");
+      setConfigError(null);
+      api("/config/intent", jsonOptions("POST", {
+        action: "restore",
+        revision: configuration.revision,
+      }))
+        .then(function (intent) {
+          return api("/config/restore", jsonOptions("POST", {
+            intent: intent.intent,
+            revision: intent.revision,
+          }));
+        })
+        .then(function (next) { acceptConfiguration(next, "Desired configuration restored. Buzz was not restarted."); })
+        .catch(function (failure) { setConfigError(errorMessage(failure)); })
+        .finally(function () { setConfigBusy(null); });
+    }
+
+    function adoptConfiguration() {
+      if (!configuration || configBusy) return;
+      if (!window.confirm("Confirm that external maintenance is complete and the current Buzz runtime is healthy. Adopt this exact configuration?")) return;
+      setConfigBusy("adopt");
+      setConfigError(null);
+      api("/config/intent", jsonOptions("POST", {
+        action: "adopt",
+        revision: configuration.revision,
+        attestation: "external_maintenance_complete",
+      }))
+        .then(function (intent) {
+          return api("/config/adopt", jsonOptions("POST", {
+            intent: intent.intent,
+            revision: intent.revision,
+          }));
+        })
+        .then(function (next) { acceptConfiguration(next, "Current healthy configuration adopted as the applied baseline."); })
+        .catch(function (failure) { setConfigError(errorMessage(failure)); })
+        .finally(function () { setConfigBusy(null); });
+    }
+
     const statusView = statusPresentation(status);
     const updateView = updatePresentation(updates);
     const container = status && status.container;
@@ -302,6 +550,217 @@
       ? "HTTP " + probe.status_code + (probe.response ? " · " + probe.response : "")
       : "Unreachable";
 
+    if (view === "config") {
+      const groups = [
+        {
+          id: "public_address",
+          label: "Public address",
+          description: "Where clients reach this Buzz deployment and its media endpoints.",
+        },
+        {
+          id: "access_policy",
+          label: "Access policy",
+          description: "Authentication changes are high impact and receive an elevated Apply warning.",
+        },
+        {
+          id: "owner_identity",
+          label: "Owner identity",
+          description: "The bootstrap owner is visible for verification but cannot be changed here.",
+        },
+      ];
+      const baselineMissing = configuration && configuration.baseline_state === "baseline_missing";
+      const operation = configuration && configuration.operation || {};
+      const recoveryRequired = RECOVERY_PHASES.has(operation.phase);
+      const mutationDisabled = !!configBusy || !!baselineMissing || recoveryRequired;
+
+      function renderField(field) {
+        const inputId = "buzz-config-" + field.name.toLowerCase().replace(/_/g, "-");
+        const writeOnly = field.disclosure === "write_only";
+        const readOnly = !field.editable;
+        return h("div", { className: "buzz-control__config-field", key: field.name },
+          h("div", { className: "buzz-control__config-label" },
+            h("label", { htmlFor: inputId }, field.label),
+            h("code", null, field.name),
+          ),
+          h("div", { className: "buzz-control__config-control" },
+            writeOnly
+              ? h("div", { className: "buzz-control__protected-control" },
+                  h("span", { className: "buzz-control__configured-state" },
+                    field.configured ? "Configured outside Hermes" : "Not configured",
+                  ),
+                )
+              : field.kind === "bool" && !readOnly
+                ? h("select", {
+                    id: inputId,
+                    value: drafts[field.name] || "false",
+                    onChange: function (event) { updateDraft(field.name, event.target.value); },
+                    disabled: mutationDisabled,
+                    "aria-label": "Edit " + field.name,
+                  },
+                    h("option", { value: "true" }, "Enabled"),
+                    h("option", { value: "false" }, "Disabled"),
+                  )
+                : h("input", {
+                    id: inputId,
+                    type: "text",
+                    value: drafts[field.name] || "",
+                    onChange: function (event) { updateDraft(field.name, event.target.value); },
+                    readOnly: readOnly,
+                    disabled: mutationDisabled && !readOnly,
+                    "aria-label": (readOnly ? "Current " : "Edit ") + field.name,
+                  }),
+            h("div", { className: "buzz-control__field-meta" },
+              h("span", null, field.impact.replace(/_/g, " ")),
+              writeOnly ? h("span", null, "Protected") : null,
+              readOnly ? h("span", null, "Read only") : null,
+            ),
+          ),
+        );
+      }
+
+      function modalKeyDown(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          if (configBusy !== "apply") cancelApply();
+          return;
+        }
+        if (event.key !== "Tab" || !event.currentTarget.querySelectorAll) return;
+        const focusable = Array.from(event.currentTarget.querySelectorAll("button:not([disabled])"));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && event.target === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && event.target === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+
+      return h("div", { className: "buzz-control buzz-control--config" },
+        h("div", { className: "buzz-control__config-header" },
+          h(Button, {
+            variant: "outline",
+            onClick: leaveConfiguration,
+            disabled: !!configBusy,
+          }, "Back to Buzz"),
+          h("div", null,
+            h("div", { className: "buzz-control__eyebrow" }, "PROTECTED PRODUCTION CONFIGURATION"),
+            h("h1", null, "Configure Buzz"),
+            h("p", null, "Manage the stable public-address and access-policy settings. Save and Apply remain separate reviewed operations."),
+          ),
+        ),
+
+        h("div", { className: "buzz-control__scope-note", role: "note" },
+          h("strong", null, "Advanced deployment settings stay outside Hermes."),
+          h("p", null, "Buzz Control preserves secrets, storage, database, ports, image, and unknown assignments without returning or editing them in the browser."),
+        ),
+
+        configBusy === "load" && !configuration
+          ? h(Card, { className: "buzz-control__card" }, h(CardContent, null, "Loading protected configuration…"))
+          : null,
+
+        baselineMissing ? h("div", { className: "buzz-control__message buzz-control__message--warning", role: "status" },
+          h("strong", null, "Applied baseline required"),
+          h("p", null, "This installation will not save, apply, or recreate the relay until you verify the current runtime and explicitly adopt this configuration."),
+        ) : null,
+
+        recoveryRequired ? h("div", { className: "buzz-control__message buzz-control__message--warning", role: "status" },
+          h("strong", null, "Configuration recovery required"),
+          h("p", null, "Verify the externally maintained runtime, then use recovery adoption before making more changes."),
+        ) : null,
+
+        configuration ? h(Card, { className: "buzz-control__card buzz-control__config-status" },
+          h(CardHeader, null, h(CardTitle, null, "Configuration state")),
+          h(CardContent, null,
+            h("dl", { className: "buzz-control__details" },
+              h(DetailRow, { label: "Desired revision", value: shortIdentity(configuration.revision) }),
+              h(DetailRow, { label: "Applied baseline", value: configuration.baseline_state === "established" ? "Established" : "Missing", mono: false }),
+              h(DetailRow, { label: "Runtime relationship", value: configuration.pending ? "Saved changes pending" : "Desired matches applied", mono: false }),
+              h(DetailRow, { label: "Last operation", value: operationLabel(operation), mono: false }),
+            ),
+          ),
+        ) : null,
+
+        configuration ? groups.map(function (group) {
+          const fields = configuration.fields.filter(function (field) { return field.group === group.id; });
+          if (!fields.length) return null;
+          return h(Card, { className: "buzz-control__card buzz-control__config-group", key: group.id },
+            h(CardHeader, null,
+              h(CardTitle, null, group.label),
+              h("p", null, group.description),
+            ),
+            h(CardContent, null, fields.map(renderField)),
+          );
+        }) : null,
+
+        configuration ? h("div", { className: "buzz-control__config-actions" },
+          h(Button, {
+            onClick: saveConfiguration,
+            disabled: mutationDisabled || !isConfigDirty,
+            "aria-busy": configBusy === "save",
+          }, configBusy === "save" ? "Saving…" : "Save changes"),
+          h(Button, {
+            ref: applyButtonRef,
+            variant: "outline",
+            onClick: prepareApply,
+            disabled: !!configBusy || recoveryRequired || isConfigDirty || !configuration.pending || !configuration.automatic_apply_allowed,
+          }, stopped ? "Review Apply and start" : "Review Apply"),
+          h(Button, {
+            variant: "outline",
+            onClick: restoreConfiguration,
+            disabled: !!configBusy || recoveryRequired || isConfigDirty || !configuration.pending || baselineMissing,
+          }, "Restore last applied"),
+          (baselineMissing || recoveryRequired || (configuration.pending && !configuration.automatic_apply_allowed))
+            ? h(Button, {
+                variant: "outline",
+                onClick: adoptConfiguration,
+                disabled: !!configBusy || isConfigDirty,
+              }, configBusy === "adopt"
+                ? "Verifying and adopting…"
+                : recoveryRequired
+                  ? "Verify and recover configuration"
+                  : "Adopt current healthy configuration")
+            : null,
+        ) : null,
+
+        isConfigDirty ? h("p", { className: "buzz-control__dirty-note" }, "Unsaved edits stay in this browser view until you save, discard, or reload.") : null,
+        configError ? h("div", { className: "buzz-control__message buzz-control__message--error", role: "alert" }, configError) : null,
+        configNotice ? h("div", { className: "buzz-control__message buzz-control__message--ok", role: "status", "aria-live": "polite" }, configNotice) : null,
+
+        intentReview ? h("div", { className: "buzz-control__modal-backdrop" },
+          h("div", {
+            className: "buzz-control__modal",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-labelledby": "buzz-config-review-title",
+            onKeyDown: modalKeyDown,
+          },
+            h("h2", { id: "buzz-config-review-title" }, intentReview.action === "apply_start" ? "Apply and start Buzz?" : "Apply saved configuration?"),
+            h("p", null, "Only the relay will be recreated, pinned to its current immutable image. Save and Apply remain separate."),
+            intentReview.review && intentReview.review.high_impact
+              ? h("div", { className: "buzz-control__message buzz-control__message--warning" }, "This change affects relay startup behavior. Review it carefully.")
+              : null,
+            h("h3", null, "Changed fields"),
+            h("ul", null, (intentReview.review && intentReview.review.changed_keys || []).map(function (name) {
+              return h("li", { key: name }, h("code", null, name));
+            })),
+            h("p", { className: "buzz-control__modal-impact" }, "Impact: " + (intentReview.review && intentReview.review.impact_classes || []).join(", ").replace(/_/g, " ")),
+            h("div", { className: "buzz-control__modal-actions" },
+              h(Button, {
+                variant: "outline",
+                onClick: cancelApply,
+                autoFocus: true,
+                disabled: configBusy === "apply",
+              }, "Cancel"),
+              h(Button, { onClick: confirmApply, disabled: configBusy === "apply" }, configBusy === "apply" ? "Applying and verifying…" : "Confirm Apply"),
+            ),
+          ),
+        ) : null,
+      );
+    }
+
     return h("div", { className: "buzz-control" },
       h("div", { className: "buzz-control__hero" },
         h("div", null,
@@ -311,9 +770,16 @@
             "Verify the relay, review the last image check, and update the running service without leaving Hermes."
           ),
         ),
-        h(Badge, {
-          className: "buzz-control__status buzz-control__status--" + statusView.tone,
-        }, h("span", { className: "buzz-control__status-dot", "aria-hidden": "true" }), statusView.label),
+        h("div", { className: "buzz-control__hero-actions" },
+          h(Badge, {
+            className: "buzz-control__status buzz-control__status--" + statusView.tone,
+          }, h("span", { className: "buzz-control__status-dot", "aria-hidden": "true" }), statusView.label),
+          h(Button, {
+            variant: "outline",
+            onClick: openConfiguration,
+            disabled: !!busy,
+          }, "Configure Buzz"),
+        ),
       ),
 
       h("div", { className: "buzz-control__grid" },

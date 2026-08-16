@@ -13,6 +13,7 @@ DASHBOARD = PLUGIN_ROOT / "dashboard"
 DEPLOY_DIR = PLUGIN_ROOT / "deploy"
 INSTALLER = PLUGIN_ROOT / "scripts" / "install.sh"
 UPDATER = PLUGIN_ROOT / "scripts" / "update.sh"
+RECONCILER = PLUGIN_ROOT / "scripts" / "reconcile.py"
 
 
 class PluginContractTests(unittest.TestCase):
@@ -34,6 +35,27 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(manifest["entry"], "dist/index.js")
         self.assertEqual(manifest["css"], "dist/style.css")
         self.assertEqual(manifest["api"], "plugin_api.py")
+        self.assertEqual(manifest["version"], "1.1.0")
+
+    def test_release_metadata_and_operator_runbook_cover_config_trust_model(self):
+        runtime_manifest = (PLUGIN_ROOT / "plugin.yaml").read_text()
+        readme = (PLUGIN_ROOT / "README.md").read_text().lower()
+        installer = INSTALLER.read_text()
+
+        self.assertIn("version: 1.1.0", runtime_manifest)
+        for required in (
+            "not projected",
+            "baseline_missing",
+            "last-applied",
+            "advanced maintenance",
+            "enabled plugin",
+            "frame",
+            "no agent",
+            "rollback",
+        ):
+            self.assertIn(required, readme)
+        self.assertNotIn("applied.env", installer)
+        self.assertTrue(os.access(RECONCILER, os.X_OK))
 
     def test_bundle_uses_authenticated_sdk_and_exposes_update_workflow(self):
         bundle = (DASHBOARD / "dist" / "index.js").read_text()
@@ -76,6 +98,13 @@ class PluginContractTests(unittest.TestCase):
         self.assertNotIn('compose pull "$SERVICE"', updater)
         self.assertTrue(os.access(UPDATER, os.X_OK))
 
+    def test_updater_delegates_lock_and_snapshot_selection_to_reconciler(self):
+        updater = UPDATER.read_text()
+
+        self.assertTrue(RECONCILER.is_file())
+        self.assertIn('"$RECONCILER" image "$TRIGGER"', updater)
+        self.assertNotIn('LOCK_DIR="$STATE_DIR/update.lock"', updater)
+
     def test_plugin_vendors_the_production_compose_capsule(self):
         base = (DEPLOY_DIR / "compose.yml").read_text()
         override = (DEPLOY_DIR / "compose.local.yml").read_text()
@@ -106,6 +135,8 @@ class PluginContractTests(unittest.TestCase):
         updater_args: list[str] | None = None,
         extra_environment: dict[str, str] | None = None,
         prior_receipt: str | None = None,
+        create_baseline: bool = True,
+        applied_text: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
         env_file = temp_root / "prod.env"
         env_file.write_text(env_text)
@@ -115,15 +146,21 @@ class PluginContractTests(unittest.TestCase):
         fake_docker = temp_root / "docker"
         fake_docker.write_text(
             "#!/bin/sh\n"
-            f"printf '%s|%s\\n' \"${{BUZZ_IMAGE-}}\" \"$*\" >> {call_log}\n"
+            f"printf '%s|%s|%s\\n' \"${{BUZZ_IMAGE-}}\" \"${{BUZZ_SERVICE_ENV_FILE-}}\" \"$*\" >> {call_log}\n"
             + docker_body
         )
         fake_docker.chmod(0o755)
 
         hermes_home = temp_root / "hermes"
-        receipt = hermes_home / "state" / "buzz-control" / "update-state"
+        state_dir = hermes_home / "state" / "buzz-control"
+        state_dir.mkdir(parents=True, mode=0o700)
+        state_dir.chmod(0o700)
+        if create_baseline:
+            applied = state_dir / "applied.env"
+            applied.write_text(applied_text if applied_text is not None else env_text)
+            applied.chmod(0o600)
+        receipt = state_dir / "update-state"
         if prior_receipt is not None:
-            receipt.parent.mkdir(parents=True)
             receipt.write_text(prior_receipt)
             receipt.chmod(0o600)
 
@@ -176,13 +213,21 @@ class PluginContractTests(unittest.TestCase):
             )
             fake_docker.chmod(0o755)
 
+            hermes_home = temp_root / "hermes"
+            state_dir = hermes_home / "state" / "buzz-control"
+            state_dir.mkdir(parents=True, mode=0o700)
+            state_dir.chmod(0o700)
+            applied = state_dir / "applied.env"
+            applied.write_bytes(env_file.read_bytes())
+            applied.chmod(0o600)
+
             environment = os.environ.copy()
             environment.update(
                 {
                     "BUZZ_CONTROL_DOCKER_BIN": str(fake_docker),
                     "BUZZ_CONTROL_COMPOSE_BIN": str(fake_docker),
                     "BUZZ_CONTROL_ENV_FILE": str(env_file),
-                    "HERMES_HOME": str(temp_root / "hermes"),
+                    "HERMES_HOME": str(hermes_home),
                 }
             )
             result = subprocess.run(
@@ -237,6 +282,67 @@ class PluginContractTests(unittest.TestCase):
             self.assertIn(
                 "ghcr.io/block/buzz:candidate|", calls
             )
+
+    def test_pending_configuration_update_uses_applied_snapshot(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_root = Path(td)
+            changed = temp_root / "updated"
+            docker_body = (
+                "case \"$*\" in\n"
+                "  *\"--project-name buzz-prod\"*\"ps -q relay\"*)\n"
+                f"    if [ -f {changed} ]; then echo new-container; else echo old-container; fi ;;\n"
+                "  *\"inspect --format {{.Image}} old-container\") echo sha256:old ;;\n"
+                "  *\"inspect --format {{.Image}} new-container\") echo sha256:new ;;\n"
+                "  *\"inspect --format {{if .State.Health}}\"*) echo healthy ;;\n"
+                "  *\"image inspect --format {{.Id}}|\"*) echo 'sha256:new|[\"ghcr.io/block/buzz@sha256:newdigest\"]|revision-new|2026-08-03T01:55:25Z|END' ;;\n"
+                "  *\"--project-name buzz-prod\"*\"up -d --wait --no-deps --pull never relay\"*) "
+                f"touch {changed} ;;\n"
+                "esac\n"
+            )
+            desired = "BUZZ_DOMAIN=desired-canary.test\n"
+            applied = (
+                temp_root
+                / "hermes"
+                / "state"
+                / "buzz-control"
+                / "applied.env"
+            )
+            result, call_log, _receipt = self._run_fake_updater(
+                temp_root,
+                docker_body,
+                env_text=desired,
+                applied_text="BUZZ_DOMAIN=applied-marker.test\n",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = call_log.read_text()
+            apply_calls = [line for line in calls.splitlines() if " up -d " in line]
+            self.assertTrue(apply_calls)
+            self.assertTrue(all(str(applied) in line for line in apply_calls))
+            self.assertTrue(
+                all(str(temp_root / "prod.env") not in line for line in apply_calls)
+            )
+
+    def test_missing_baseline_can_pull_but_never_recreates_relay(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp_root = Path(td)
+            docker_body = (
+                "case \"$*\" in\n"
+                "  *\"--project-name buzz-prod\"*\"ps -q relay\"*) echo old-container ;;\n"
+                "  *\"inspect --format {{.Image}} old-container\") echo sha256:old ;;\n"
+                "  *\"image pull \"*) : ;;\n"
+                "  *\"image inspect --format {{.Id}}|\"*) echo 'sha256:new|[\"ghcr.io/block/buzz@sha256:newdigest\"]|revision-new|2026-08-03T01:55:25Z|END' ;;\n"
+                "esac\n"
+            )
+            result, call_log, receipt = self._run_fake_updater(
+                temp_root, docker_body, create_baseline=False
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            calls = call_log.read_text()
+            self.assertIn("image pull", calls)
+            self.assertNotIn(" up -d ", calls)
+            self.assertIn("result=baseline_missing", receipt.read_text())
 
     def test_pull_failure_carries_forward_last_observed_image(self):
         with tempfile.TemporaryDirectory() as td:
@@ -416,7 +522,7 @@ class PluginContractTests(unittest.TestCase):
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("mode 0600", result.stderr)
+            self.assertIn("unsafe_storage", result.stderr)
             self.assertFalse(call_log.exists())
 
     def test_scheduled_update_does_not_start_a_stopped_relay(self):
