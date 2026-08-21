@@ -180,6 +180,7 @@ class Reconciler:
         *,
         environment: dict[str, str] | None = None,
         capture: bool = False,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         try:
             output_options = (
@@ -193,6 +194,7 @@ class Reconciler:
                 text=True,
                 timeout=self._remaining(),
                 env=environment,
+                input=input_text,
                 **output_options,
             )
         except subprocess.TimeoutExpired as exc:
@@ -292,13 +294,31 @@ class Reconciler:
         return values[0]
 
     def _service_config_hash(self, env_file: Path, image: str) -> str:
-        result = self._compose(
+        rendered = self._compose(
             env_file,
             image,
             "config",
-            "--hash",
-            self.settings.service,
+            "--format",
+            "json",
             capture=True,
+        )
+        # Docker Compose's direct config --hash path does not resolve env_file
+        # values in affected releases, while container creation does. Hash the
+        # fully rendered model through stdin so both paths use the same model.
+        result = self._command(
+            [
+                str(self.settings.compose),
+                "--project-name",
+                self.settings.project,
+                "-f",
+                "-",
+                "config",
+                "--hash",
+                self.settings.service,
+            ],
+            environment=self._base_environment(env_file, image),
+            capture=True,
+            input_text=rendered.stdout,
         )
         values = [line.split() for line in result.stdout.splitlines() if line.strip()]
         if (
