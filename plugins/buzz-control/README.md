@@ -66,6 +66,10 @@ operator explicitly adopts the current healthy configuration. Subsequent manual
 or scheduled image updates retry automatic baseline establishment when the
 baseline is still missing.
 
+The generation check hashes a fully rendered Compose model. This includes
+service-level `env_file` values on Docker Compose releases where direct
+`config --hash` output omits them and would otherwise report false drift.
+
 ## Managed settings
 
 | Group | Fields | Save | Automatic Apply |

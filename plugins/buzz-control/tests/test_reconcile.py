@@ -40,6 +40,7 @@ class ReconcilerTests(unittest.TestCase):
         running: bool = True,
         action: str = "apply",
         config_hash_match: bool = True,
+        compose_hash_requires_resolved_model: bool = False,
     ):
         config_dir = root / "config"
         state_dir = root / "state"
@@ -77,11 +78,22 @@ class ReconcilerTests(unittest.TestCase):
             up_action = "exit 42"
         desired_hash = "a" * 64
         runtime_hash = desired_hash if config_hash_match else "b" * 64
+        unresolved_hash = (
+            "c" * 64 if compose_hash_requires_resolved_model else desired_hash
+        )
+        rendered_model = (
+            '{"name":"buzz-prod","services":{"relay":{"environment":'
+            '{"BUZZ_DOMAIN":"second.test"}}}}'
+        )
         fake.write_text(
             "#!/bin/sh\n"
             f"printf '%s|%s\\n' \"${{BUZZ_SERVICE_ENV_FILE-}}\" \"$*\" >> {call_log}\n"
             "case \"$*\" in\n"
-            f"  *\" config --hash relay\"*) echo 'relay {desired_hash}' ;;\n"
+            f"  *\" config --format json\"*) echo '{rendered_model}' ;;\n"
+            f"  *\" -f - config --hash relay\"*) read -r payload; "
+            f"[ \"$payload\" = '{rendered_model}' ] || exit 43; "
+            f"echo 'relay {desired_hash}' ;;\n"
+            f"  *\" config --hash relay\"*) echo 'relay {unresolved_hash}' ;;\n"
             f"  *\" ps --all -q relay\"*) if [ \"$(cat {runtime_state})\" = running ]; then echo relay-container; else echo stopped-container; fi ;;\n"
             f"  *\" ps -q relay\"*) if [ \"$(cat {runtime_state})\" = running ]; then echo relay-container; fi ;;\n"
             "  *\"inspect --format {{.Image}} relay-container\"*|*\"inspect --format {{.Image}} stopped-container\"*) echo sha256:old ;;\n"
@@ -436,6 +448,24 @@ class ReconcilerTests(unittest.TestCase):
                 if " config --hash relay" in line
             )
             self.assertIn(str(paths.operation), hash_call)
+
+    def test_adopt_hashes_resolved_compose_model_for_env_file_services(self):
+        with tempfile.TemporaryDirectory() as td:
+            runner, _store, _paths, saved, token, call_log = self.make_runner(
+                Path(td),
+                3300,
+                action="adopt",
+                compose_hash_requires_resolved_model=True,
+            )
+
+            result = runner.adopt(saved.revision, token)
+
+            self.assertEqual(result, "adopted")
+            calls = call_log.read_text().splitlines()
+            self.assertTrue(any(" config --format json" in line for line in calls))
+            self.assertTrue(
+                any(" -f - config --hash relay" in line for line in calls)
+            )
 
     def test_adopt_rejects_a_healthy_stale_compose_generation(self):
         with tempfile.TemporaryDirectory() as td:
